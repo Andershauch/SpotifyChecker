@@ -86,10 +86,10 @@ async function spotifyGet<T>(url: string, accessToken: string): Promise<T> {
 export async function fetchOwnPublicPlaylists() {
   const accessToken = await getAccessToken();
   const playlistMap = new Map<string, PlaylistItem>();
-  let url = `https://api.spotify.com/v1/users/${encodeURIComponent(getEnv().SPOTIFY_USER_ID)}/playlists?limit=50`;
+  let url: string | null = `https://api.spotify.com/v1/users/${encodeURIComponent(getEnv().SPOTIFY_USER_ID)}/playlists?limit=50`;
 
   while (url) {
-    const page = await spotifyGet<SpotifyPaging<PlaylistItem>>(url, accessToken);
+    const page: SpotifyPaging<PlaylistItem> = await spotifyGet(url, accessToken);
 
     for (const playlist of page.items) {
       if (playlist.owner.id === getEnv().SPOTIFY_USER_ID && playlist.public === true) {
@@ -108,12 +108,12 @@ export async function fetchUnavailableTracksForPlaylist(
   playlistName: string,
   accessToken: string,
 ): Promise<{ unavailable: TrackAvailability[]; checked: number }> {
-  let url = `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=100&market=${getEnv().SPOTIFY_MARKET}`;
+  let url: string | null = `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=100&market=${getEnv().SPOTIFY_MARKET}`;
   const unavailable: TrackAvailability[] = [];
   let checked = 0;
 
   while (url) {
-    const page = await spotifyGet<SpotifyPaging<TrackEntry>>(url, accessToken);
+    const page: SpotifyPaging<TrackEntry> = await spotifyGet(url, accessToken);
 
     for (const item of page.items) {
       const track = item.track;

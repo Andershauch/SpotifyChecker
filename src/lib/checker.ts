@@ -15,6 +15,22 @@ export type CheckSummary = {
   errorMessage: string | null;
 };
 
+type ExistingUnavailableRow = {
+  currently_unavailable: boolean;
+  first_seen_at: string;
+};
+
+type LatestRunRow = {
+  run_at: string;
+  status: "ok" | "error";
+  checked_tracks: number;
+  unavailable_count: number;
+  error_message: string | null;
+  payload: {
+    checkedPlaylists?: number;
+  };
+};
+
 export async function runDailyCheck(): Promise<CheckSummary> {
   await ensureSchema();
 
@@ -71,15 +87,13 @@ async function persistUnavailableTracks(unavailableTracks: TrackAvailability[]) 
   const newUnavailableTracks: TrackAvailability[] = [];
 
   for (const track of unavailableTracks) {
-    const existingRows = await sql<
-      Array<{ currently_unavailable: boolean; first_seen_at: string }>
-    >`
+    const existingRows = (await sql`
       SELECT currently_unavailable, first_seen_at
       FROM unavailable_tracks
       WHERE track_id = ${track.trackId}
         AND playlist_id = ${track.playlistId}
       LIMIT 1
-    `;
+    `) as ExistingUnavailableRow[];
 
     const existing = existingRows[0];
     if (!existing || !existing.currently_unavailable) {
@@ -152,23 +166,12 @@ export async function getLatestRun() {
   await ensureSchema();
   const sql = getSql();
 
-  const rows = await sql<
-    Array<{
-      run_at: string;
-      status: "ok" | "error";
-      checked_tracks: number;
-      unavailable_count: number;
-      error_message: string | null;
-      payload: {
-        checkedPlaylists?: number;
-      };
-    }>
-  >`
+  const rows = (await sql`
     SELECT run_at, status, checked_tracks, unavailable_count, error_message, payload
     FROM check_runs
     ORDER BY run_at DESC
     LIMIT 1
-  `;
+  `) as LatestRunRow[];
 
   return rows[0] ?? null;
 }
