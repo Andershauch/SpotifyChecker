@@ -76,18 +76,86 @@ async function getAccessToken() {
 }
 
 async function spotifyGet<T>(url: string, accessToken: string): Promise<T> {
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-    },
-    cache: "no-store",
-  });
+  return withRetry(async () => {
+    const response = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+      cache: "no-store",
+    });
 
-  if (!response.ok) {
-    throw new Error(`Spotify API request failed: ${response.status} (${url})`);
+    if (!response.ok) {
+      const retryAfter = Number(response.headers.get("retry-after") ?? "0");
+      const error = new Error(`Spotify API request failed: ${response.status} (${url})`) as Error & {
+        status?: number;
+        retryAfterSeconds?: number;
+      };
+      error.status = response.status;
+      error.retryAfterSeconds = Number.isFinite(retryAfter) ? retryAfter : 0;
+      throw error;
+    }
+
+    return (await response.json()) as T;
+  });
+}
+
+async function withRetry<T>(fn: () => Promise<T>, attempts = 4): Promise<T> {
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      const status = getStatusFromError(error);
+      const shouldRetry =
+        attempt < attempts && (status === 429 || (status !== null && status >= 500));
+
+      if (!shouldRetry) {
+        throw error;
+      }
+
+      const retryAfterSeconds = getRetryAfterSecondsFromError(error);
+      const exponentialBackoffMs = 750 * 2 ** (attempt - 1);
+      const retryAfterMs = retryAfterSeconds > 0 ? retryAfterSeconds * 1000 : 0;
+      const jitterMs = Math.floor(Math.random() * 250);
+      const delayMs = Math.max(exponentialBackoffMs, retryAfterMs) + jitterMs;
+
+      await wait(delayMs);
+    }
   }
 
-  return (await response.json()) as T;
+  throw lastError instanceof Error ? lastError : new Error("Spotify retry failed");
+}
+
+function getStatusFromError(error: unknown) {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "status" in error &&
+    typeof (error as { status?: unknown }).status === "number"
+  ) {
+    return (error as { status: number }).status;
+  }
+  return null;
+}
+
+function getRetryAfterSecondsFromError(error: unknown) {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "retryAfterSeconds" in error &&
+    typeof (error as { retryAfterSeconds?: unknown }).retryAfterSeconds === "number"
+  ) {
+    return (error as { retryAfterSeconds: number }).retryAfterSeconds;
+  }
+  return 0;
+}
+
+function wait(ms: number) {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 export async function fetchOwnPublicPlaylists() {
