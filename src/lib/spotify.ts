@@ -45,6 +45,13 @@ export type TrackAvailability = {
   unavailableReason: string;
 };
 
+function parsePlaylistIdsFromEnv() {
+  return getEnv()
+    .SPOTIFY_PLAYLIST_IDS.split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+}
+
 async function getAccessToken() {
   const encodedCredentials = Buffer.from(
     `${getEnv().SPOTIFY_CLIENT_ID}:${getEnv().SPOTIFY_CLIENT_SECRET}`,
@@ -85,6 +92,28 @@ async function spotifyGet<T>(url: string, accessToken: string): Promise<T> {
 
 export async function fetchOwnPublicPlaylists() {
   const accessToken = await getAccessToken();
+  const explicitPlaylistIds = parsePlaylistIdsFromEnv();
+
+  if (explicitPlaylistIds.length > 0) {
+    const playlists: PlaylistItem[] = [];
+
+    for (const playlistId of explicitPlaylistIds) {
+      const playlist = await spotifyGet<PlaylistItem>(
+        `https://api.spotify.com/v1/playlists/${encodeURIComponent(playlistId)}`,
+        accessToken,
+      );
+      playlists.push(playlist);
+    }
+
+    return { accessToken, playlists };
+  }
+
+  if (!getEnv().SPOTIFY_USER_ID) {
+    throw new Error(
+      "Set either SPOTIFY_PLAYLIST_IDS or SPOTIFY_USER_ID in environment variables.",
+    );
+  }
+
   const playlistMap = new Map<string, PlaylistItem>();
   let url: string | null = `https://api.spotify.com/v1/users/${encodeURIComponent(getEnv().SPOTIFY_USER_ID)}/playlists?limit=50`;
 

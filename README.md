@@ -28,7 +28,8 @@ Kopiér `.env.example` til `.env.local` og udfyld:
 - `DATABASE_URL`
 - `SPOTIFY_CLIENT_ID`
 - `SPOTIFY_CLIENT_SECRET`
-- `SPOTIFY_USER_ID` (dit Spotify user id)
+- `SPOTIFY_PLAYLIST_IDS` (anbefalet: komma-separerede playlist IDs, fx `0FdEoWWi4yrg9eytrrrsTn,abcd1234`)
+- `SPOTIFY_USER_ID` (valgfri fallback)
 - `SPOTIFY_MARKET` (ISO-landekode, fx `DK`)
 - `RESEND_API_KEY`
 - `ALERT_EMAIL_TO`
