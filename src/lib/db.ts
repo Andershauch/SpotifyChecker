@@ -36,6 +36,14 @@ export type PlaylistCheckpointRow = {
   last_run_job_id: string | null;
 };
 
+export type MonitoredPlaylistRow = {
+  playlist_id: string;
+  is_active: boolean;
+  source: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export function getSql() {
   return neon(getEnv().DATABASE_URL);
 }
@@ -112,6 +120,16 @@ export async function ensureSchema() {
       track_total INTEGER,
       last_checked_at TIMESTAMPTZ,
       last_run_job_id TEXT
+    );
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS monitored_playlists (
+      playlist_id TEXT PRIMARY KEY,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      source TEXT NOT NULL DEFAULT 'manual',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `;
 }
@@ -321,4 +339,35 @@ export async function upsertPlaylistCheckpoint(input: {
   `) as PlaylistCheckpointRow[];
 
   return rows[0] ?? null;
+}
+
+export async function syncEnvPlaylistsToDatabase(playlistIds: string[]) {
+  if (playlistIds.length === 0) {
+    return;
+  }
+
+  const sql = getSql();
+
+  for (const playlistId of playlistIds) {
+    await sql`
+      INSERT INTO monitored_playlists (playlist_id, is_active, source, created_at, updated_at)
+      VALUES (${playlistId}, TRUE, 'env_seed', NOW(), NOW())
+      ON CONFLICT (playlist_id)
+      DO UPDATE SET
+        is_active = TRUE,
+        updated_at = NOW()
+    `;
+  }
+}
+
+export async function getActiveMonitoredPlaylistIds() {
+  const sql = getSql();
+  const rows = (await sql`
+    SELECT playlist_id, is_active, source, created_at, updated_at
+    FROM monitored_playlists
+    WHERE is_active = TRUE
+    ORDER BY created_at ASC
+  `) as MonitoredPlaylistRow[];
+
+  return rows;
 }

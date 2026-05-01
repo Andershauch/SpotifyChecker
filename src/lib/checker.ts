@@ -5,19 +5,24 @@ import {
   forceReleaseCheckRunLock,
   getCheckJob,
   getCheckRunLock,
+  getActiveMonitoredPlaylistIds,
   getLatestCheckJob,
   getPlaylistCheckpoint,
   getSql,
   heartbeatCheckRunLock,
   releaseCheckRunLock,
+  syncEnvPlaylistsToDatabase,
   updateCheckJob,
   upsertPlaylistCheckpoint,
   type CheckJobRow,
 } from "@/lib/db";
 import { sendUnavailableTracksAlert } from "@/lib/mailer";
 import {
+  fetchPlaylistsByIds,
   fetchOwnPublicPlaylists,
   fetchUnavailableTracksForPlaylist,
+  getPlaylistIdsFromEnv,
+  getSpotifyAccessToken,
   type SpotifyExecutionContext,
   type TrackAvailability,
 } from "@/lib/spotify";
@@ -90,6 +95,7 @@ export async function runDailyCheck(
   triggerSource: "manual" | "cron" = "manual",
 ): Promise<CheckSummary> {
   await ensureSchema();
+  await syncEnvPlaylistsToDatabase(getPlaylistIdsFromEnv());
   const job = await createCheckJob(triggerSource);
   const lock = await acquireCheckRunLock(
     CHECK_RUN_LOCK_NAME,
@@ -158,7 +164,30 @@ export async function runDailyCheck(
       },
     });
 
-    const { accessToken, playlists } = await fetchOwnPublicPlaylists(executionContext);
+    const monitoredPlaylists = await getActiveMonitoredPlaylistIds();
+    let playlists;
+    let accessToken: string;
+
+    if (monitoredPlaylists.length > 0) {
+      await updateCheckJob(job.id, {
+        heartbeat: true,
+        payload: {
+          currentPlaylistName: null,
+          currentStage: "Henter playlister fra database-kataloget",
+        },
+      });
+
+      accessToken = await getSpotifyAccessToken();
+      playlists = await fetchPlaylistsByIds(
+        monitoredPlaylists.map((playlist) => playlist.playlist_id),
+        accessToken,
+        executionContext,
+      );
+    } else {
+      const fallbackResult = await fetchOwnPublicPlaylists(executionContext);
+      accessToken = fallbackResult.accessToken;
+      playlists = fallbackResult.playlists;
+    }
 
     for (const playlist of playlists) {
       await updateCheckJob(job.id, {

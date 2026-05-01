@@ -80,6 +80,10 @@ function parsePlaylistIdsFromEnv() {
     .filter(Boolean);
 }
 
+export function getPlaylistIdsFromEnv() {
+  return parsePlaylistIdsFromEnv();
+}
+
 async function getAccessToken() {
   if (cachedAccessToken && cachedAccessToken.expiresAt > Date.now()) {
     return cachedAccessToken.token;
@@ -96,6 +100,10 @@ async function getAccessToken() {
   } finally {
     inFlightAccessTokenPromise = null;
   }
+}
+
+export async function getSpotifyAccessToken() {
+  return getAccessToken();
 }
 
 async function requestAccessToken() {
@@ -310,23 +318,7 @@ export async function fetchOwnPublicPlaylists(context?: SpotifyExecutionContext)
   const explicitPlaylistIds = parsePlaylistIdsFromEnv();
 
   if (explicitPlaylistIds.length > 0) {
-    const playlists: PlaylistSummary[] = [];
-
-    for (const playlistId of explicitPlaylistIds) {
-      const playlist = await spotifyGet<PlaylistItem>(
-        `https://api.spotify.com/v1/playlists/${encodeURIComponent(playlistId)}?fields=id,name,owner(id),public,snapshot_id,tracks(total)`,
-        accessToken,
-        context,
-      );
-
-      playlists.push({
-        id: playlist.id,
-        name: playlist.name,
-        snapshotId: playlist.snapshot_id ?? null,
-        trackTotal: playlist.tracks?.total ?? null,
-      });
-    }
-
+    const playlists = await fetchPlaylistsByIds(explicitPlaylistIds, accessToken, context);
     return { accessToken, playlists };
   }
 
@@ -374,6 +366,32 @@ export async function fetchOwnPublicPlaylists(context?: SpotifyExecutionContext)
   }
 
   return { accessToken, playlists: [...playlistMap.values()] };
+}
+
+export async function fetchPlaylistsByIds(
+  playlistIds: string[],
+  accessToken?: string,
+  context?: SpotifyExecutionContext,
+) {
+  const token = accessToken ?? (await getAccessToken());
+  const playlists: PlaylistSummary[] = [];
+
+  for (const playlistId of playlistIds) {
+    const playlist = await spotifyGet<PlaylistItem>(
+      `https://api.spotify.com/v1/playlists/${encodeURIComponent(playlistId)}?fields=id,name,owner(id),public,snapshot_id,tracks(total)`,
+      token,
+      context,
+    );
+
+    playlists.push({
+      id: playlist.id,
+      name: playlist.name,
+      snapshotId: playlist.snapshot_id ?? null,
+      trackTotal: playlist.tracks?.total ?? null,
+    });
+  }
+
+  return playlists;
 }
 
 export async function fetchUnavailableTracksForPlaylist(
