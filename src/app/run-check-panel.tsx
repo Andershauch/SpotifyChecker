@@ -28,6 +28,7 @@ type JobSnapshot = {
   cancelRequested: boolean;
   errorMessage: string | null;
   currentPlaylistName: string | null;
+  currentStage: string | null;
 };
 
 type RunStatusResponse = {
@@ -347,6 +348,10 @@ export function RunCheckPanel() {
                   <div>
                     <dt>Aktuel playlist</dt>
                     <dd>{activeJob.currentPlaylistName ?? "-"}</dd>
+                  </div>
+                  <div>
+                    <dt>Aktuel fase</dt>
+                    <dd>{activeJob.currentStage ?? "-"}</dd>
                   </div>
                 </dl>
 

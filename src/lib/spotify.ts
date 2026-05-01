@@ -61,6 +61,7 @@ export type TrackAvailability = {
 
 const ACCESS_TOKEN_REFRESH_BUFFER_MS = 60_000;
 const SPOTIFY_MIN_REQUEST_INTERVAL_MS = 300;
+const SPOTIFY_FETCH_TIMEOUT_MS = 15_000;
 
 let cachedAccessToken:
   | {
@@ -102,7 +103,7 @@ async function requestAccessToken() {
     `${getEnv().SPOTIFY_CLIENT_ID}:${getEnv().SPOTIFY_CLIENT_SECRET}`,
   ).toString("base64");
 
-  const response = await fetch("https://accounts.spotify.com/api/token", {
+  const response = await fetchWithTimeout("https://accounts.spotify.com/api/token", {
     method: "POST",
     headers: {
       Authorization: `Basic ${encodedCredentials}`,
@@ -135,7 +136,7 @@ async function spotifyGet<T>(
       await context?.onCheckpoint?.();
       await waitForSpotifyRequestWindow(context);
 
-      const response = await fetch(url, {
+      const response = await fetchWithTimeout(url, {
         headers: {
           Authorization: `Bearer ${accessToken}`,
         },
@@ -244,6 +245,30 @@ function formatRetryLogSuffix(error: unknown, retryAfterSeconds: number) {
       : "";
 
   return `${retryAfter}${url}`;
+}
+
+async function fetchWithTimeout(input: string, init: RequestInit) {
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: AbortSignal.timeout(SPOTIFY_FETCH_TIMEOUT_MS),
+    });
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.name === "AbortError" || error.name === "TimeoutError")
+    ) {
+      const timeoutError = new Error(
+        `Spotify request timed out after ${SPOTIFY_FETCH_TIMEOUT_MS}ms (${input})`,
+      ) as Error & { status?: number; retryAfterSeconds?: number; url?: string };
+      timeoutError.status = 504;
+      timeoutError.retryAfterSeconds = 0;
+      timeoutError.url = input;
+      throw timeoutError;
+    }
+
+    throw error;
+  }
 }
 
 async function wait(ms: number, context?: SpotifyExecutionContext) {

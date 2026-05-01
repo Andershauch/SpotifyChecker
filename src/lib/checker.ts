@@ -75,6 +75,7 @@ export type CheckRunStatus = {
     cancelRequested: boolean;
     errorMessage: string | null;
     currentPlaylistName: string | null;
+    currentStage: string | null;
   } | null;
 };
 
@@ -122,7 +123,7 @@ export async function runDailyCheck(
     status: "running",
     started: true,
     heartbeat: true,
-    payload: { currentPlaylistName: null },
+    payload: { currentPlaylistName: null, currentStage: "Forbereder check" },
   });
 
   let checkedTracks = 0;
@@ -149,6 +150,13 @@ export async function runDailyCheck(
 
   try {
     await checkpoint(true);
+    await updateCheckJob(job.id, {
+      heartbeat: true,
+      payload: {
+        currentPlaylistName: null,
+        currentStage: "Henter playlister fra Spotify",
+      },
+    });
 
     const { accessToken, playlists } = await fetchOwnPublicPlaylists(executionContext);
 
@@ -159,7 +167,10 @@ export async function runDailyCheck(
         checkedPlaylists,
         skippedPlaylists,
         unavailableCount: unavailableTracks.length,
-        payload: { currentPlaylistName: playlist.name },
+        payload: {
+          currentPlaylistName: playlist.name,
+          currentStage: `Forbereder playlist: ${playlist.name}`,
+        },
       });
 
       await checkpoint(true);
@@ -184,10 +195,21 @@ export async function runDailyCheck(
           checkedPlaylists,
           skippedPlaylists,
           unavailableCount: unavailableTracks.length,
-          payload: { currentPlaylistName: null },
+          payload: {
+            currentPlaylistName: null,
+            currentStage: `Springer uændret playlist over: ${playlist.name}`,
+          },
         });
         continue;
       }
+
+      await updateCheckJob(job.id, {
+        heartbeat: true,
+        payload: {
+          currentPlaylistName: playlist.name,
+          currentStage: `Tjekker tracks i playlist: ${playlist.name}`,
+        },
+      });
 
       const result = await fetchUnavailableTracksForPlaylist(
         playlist.id,
@@ -214,9 +236,20 @@ export async function runDailyCheck(
         checkedPlaylists,
         skippedPlaylists,
         unavailableCount: unavailableTracks.length,
-        payload: { currentPlaylistName: null },
+        payload: {
+          currentPlaylistName: null,
+          currentStage: `Færdig med playlist: ${playlist.name}`,
+        },
       });
     }
+
+    await updateCheckJob(job.id, {
+      heartbeat: true,
+      payload: {
+        currentPlaylistName: null,
+        currentStage: "Gemmer resultater og sender eventuel mail",
+      },
+    });
 
     const newUnavailableTracks = await persistUnavailableTracks(unavailableTracks);
     await sendUnavailableTracksAlert(newUnavailableTracks);
@@ -238,7 +271,7 @@ export async function runDailyCheck(
       skippedPlaylists,
       unavailableCount: unavailableTracks.length,
       newUnavailableCount: newUnavailableTracks.length,
-      payload: { currentPlaylistName: null },
+      payload: { currentPlaylistName: null, currentStage: "Færdig" },
       finished: true,
     });
     await saveRun(summary, unavailableTracks);
@@ -259,7 +292,7 @@ export async function runDailyCheck(
       skippedPlaylists,
       unavailableCount: unavailableTracks.length,
       errorMessage: summary.errorMessage,
-      payload: { currentPlaylistName: null },
+      payload: { currentPlaylistName: null, currentStage: "Afsluttet med fejl" },
       finished: true,
     });
     await saveRun(summary, unavailableTracks);
@@ -470,6 +503,10 @@ function mapCheckJob(job: CheckJobRow | null) {
     currentPlaylistName:
       typeof job.payload?.currentPlaylistName === "string"
         ? job.payload.currentPlaylistName
+        : null,
+    currentStage:
+      typeof job.payload?.currentStage === "string"
+        ? job.payload.currentStage
         : null,
   };
 }
