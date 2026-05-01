@@ -1,4 +1,5 @@
 import { getLatestRun } from "@/lib/checker";
+import { RunCheckPanel } from "@/app/run-check-panel";
 
 function formatDate(dateString: string) {
   return new Intl.DateTimeFormat("da-DK", {
@@ -61,6 +62,8 @@ export default async function Home() {
           <p>Ingen kørsel endnu. Trigger cron eller kald `/api/check` manuelt.</p>
         )}
       </section>
+
+      <RunCheckPanel />
     </main>
   );
 }
