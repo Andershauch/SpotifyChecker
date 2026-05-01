@@ -321,7 +321,10 @@ export async function runDailyCheck(
       skippedPlaylists,
       unavailableCount: unavailableTracks.length,
       errorMessage: summary.errorMessage,
-      payload: { currentPlaylistName: null, currentStage: "Afsluttet med fejl" },
+      payload: {
+        currentPlaylistName: null,
+        currentStage: describeFailureStage(error),
+      },
       finished: true,
     });
     await saveRun(summary, unavailableTracks);
@@ -349,6 +352,20 @@ function buildErrorSummary(
     skippedPlaylists,
     errorMessage: message,
   };
+}
+
+function describeFailureStage(error: unknown) {
+  const message = error instanceof Error ? error.message : "";
+
+  if (message.includes("Spotify rate limit")) {
+    return "Spotify rate limit ramte appen";
+  }
+
+  if (message.includes("timed out")) {
+    return "Spotify svarede ikke i tide";
+  }
+
+  return "Afsluttet med fejl";
 }
 
 async function syncJobControl(jobId: string, ownerId: string) {

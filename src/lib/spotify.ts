@@ -62,6 +62,7 @@ export type TrackAvailability = {
 const ACCESS_TOKEN_REFRESH_BUFFER_MS = 60_000;
 const SPOTIFY_MIN_REQUEST_INTERVAL_MS = 300;
 const SPOTIFY_FETCH_TIMEOUT_MS = 15_000;
+const MAX_RETRY_AFTER_SECONDS = 120;
 
 let cachedAccessToken:
   | {
@@ -193,6 +194,12 @@ async function withRetry<T>(
       }
 
       const retryAfterSeconds = getRetryAfterSecondsFromError(error);
+      if (status === 429 && retryAfterSeconds > MAX_RETRY_AFTER_SECONDS) {
+        throw new Error(
+          `Spotify rate limit er aktiv i ${retryAfterSeconds} sekunder. Stopper jobbet i stedet for at vente så længe.`,
+        );
+      }
+
       const exponentialBackoffMs = 750 * 2 ** (attempt - 1);
       const retryAfterMs = retryAfterSeconds > 0 ? retryAfterSeconds * 1000 : 0;
       const jitterMs = Math.floor(Math.random() * 250);
