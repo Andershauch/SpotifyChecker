@@ -435,6 +435,7 @@ export async function getLatestRun() {
   const rows = (await sql`
     SELECT run_at, status, checked_tracks, unavailable_count, error_message, payload
     FROM check_runs
+    WHERE status <> 'skipped'
     ORDER BY run_at DESC
     LIMIT 1
   `) as LatestRunRow[];

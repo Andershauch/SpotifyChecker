@@ -22,7 +22,7 @@ export default async function Home() {
       </section>
 
       <section className="card">
-        <h2>Seneste kørsel</h2>
+        <h2>Seneste afsluttede kørsel</h2>
         {latestRun ? (
           <dl className="stats">
             <div>

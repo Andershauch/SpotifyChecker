@@ -341,21 +341,36 @@ export async function fetchOwnPublicPlaylists(context?: SpotifyExecutionContext)
     `https://api.spotify.com/v1/users/${encodeURIComponent(getEnv().SPOTIFY_USER_ID)}/playlists` +
     "?limit=50&fields=items(id,name,owner(id),public,snapshot_id,tracks(total)),next";
 
-  while (url) {
-    const page: SpotifyPaging<PlaylistItem> = await spotifyGet(url, accessToken, context);
+  try {
+    while (url) {
+      const page: SpotifyPaging<PlaylistItem> = await spotifyGet(url, accessToken, context);
 
-    for (const playlist of page.items) {
-      if (playlist.owner.id === getEnv().SPOTIFY_USER_ID && playlist.public === true) {
-        playlistMap.set(playlist.id, {
-          id: playlist.id,
-          name: playlist.name,
-          snapshotId: playlist.snapshot_id ?? null,
-          trackTotal: playlist.tracks?.total ?? null,
-        });
+      for (const playlist of page.items) {
+        if (playlist.owner.id === getEnv().SPOTIFY_USER_ID && playlist.public === true) {
+          playlistMap.set(playlist.id, {
+            id: playlist.id,
+            name: playlist.name,
+            snapshotId: playlist.snapshot_id ?? null,
+            trackTotal: playlist.tracks?.total ?? null,
+          });
+        }
       }
+
+      url = page.next;
+    }
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "status" in error &&
+      (error as { status?: number }).status === 403
+    ) {
+      throw new Error(
+        "Spotify afviser playlist-opslag via SPOTIFY_USER_ID. Sæt SPOTIFY_PLAYLIST_IDS med en eller flere konkrete playlist IDs i stedet.",
+      );
     }
 
-    url = page.next;
+    throw error;
   }
 
   return { accessToken, playlists: [...playlistMap.values()] };
