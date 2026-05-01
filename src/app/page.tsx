@@ -30,7 +30,13 @@ export default async function Home() {
             </div>
             <div>
               <dt>Status</dt>
-              <dd>{latestRun.status === "ok" ? "OK" : "Fejl"}</dd>
+              <dd>
+                {latestRun.status === "ok"
+                  ? "OK"
+                  : latestRun.status === "skipped"
+                    ? "Sprunget over"
+                    : "Fejl"}
+              </dd>
             </div>
             <div>
               <dt>Playlister tjekket</dt>

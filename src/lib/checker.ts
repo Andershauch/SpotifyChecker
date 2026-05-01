@@ -1,4 +1,9 @@
-import { ensureSchema, getSql } from "@/lib/db";
+import {
+  acquireCheckRunLock,
+  ensureSchema,
+  getSql,
+  releaseCheckRunLock,
+} from "@/lib/db";
 import { sendUnavailableTracksAlert } from "@/lib/mailer";
 import {
   fetchOwnPublicPlaylists,
@@ -6,8 +11,11 @@ import {
   type TrackAvailability,
 } from "@/lib/spotify";
 
+const CHECK_RUN_LOCK_NAME = "daily-spotify-check";
+const CHECK_RUN_LOCK_TTL_SECONDS = 15 * 60;
+
 export type CheckSummary = {
-  status: "ok" | "error";
+  status: "ok" | "error" | "skipped";
   checkedTracks: number;
   unavailableCount: number;
   newUnavailableCount: number;
@@ -22,7 +30,7 @@ type ExistingUnavailableRow = {
 
 type LatestRunRow = {
   run_at: string;
-  status: "ok" | "error";
+  status: "ok" | "error" | "skipped";
   checked_tracks: number;
   unavailable_count: number;
   error_message: string | null;
@@ -33,11 +41,31 @@ type LatestRunRow = {
 
 export async function runDailyCheck(): Promise<CheckSummary> {
   await ensureSchema();
+  const lockOwnerId = await acquireCheckRunLock(
+    CHECK_RUN_LOCK_NAME,
+    CHECK_RUN_LOCK_TTL_SECONDS,
+  );
+
+  if (!lockOwnerId) {
+    const summary: CheckSummary = {
+      status: "skipped",
+      checkedTracks: 0,
+      unavailableCount: 0,
+      newUnavailableCount: 0,
+      checkedPlaylists: 0,
+      errorMessage: "Et andet check kører allerede, så denne trigger blev sprunget over.",
+    };
+
+    await saveRun(summary, []);
+    return summary;
+  }
+
+  let checkedTracks = 0;
+  let checkedPlaylists = 0;
+  const unavailableTracks: TrackAvailability[] = [];
 
   try {
     const { accessToken, playlists } = await fetchOwnPublicPlaylists();
-    let checkedTracks = 0;
-    const unavailableTracks: TrackAvailability[] = [];
 
     for (const playlist of playlists) {
       const result = await fetchUnavailableTracksForPlaylist(
@@ -47,6 +75,7 @@ export async function runDailyCheck(): Promise<CheckSummary> {
       );
       checkedTracks += result.checked;
       unavailableTracks.push(...result.unavailable);
+      checkedPlaylists += 1;
     }
 
     const newUnavailableTracks = await persistUnavailableTracks(unavailableTracks);
@@ -57,7 +86,7 @@ export async function runDailyCheck(): Promise<CheckSummary> {
       checkedTracks,
       unavailableCount: unavailableTracks.length,
       newUnavailableCount: newUnavailableTracks.length,
-      checkedPlaylists: playlists.length,
+      checkedPlaylists,
       errorMessage: null,
     };
 
@@ -68,15 +97,17 @@ export async function runDailyCheck(): Promise<CheckSummary> {
 
     const summary: CheckSummary = {
       status: "error",
-      checkedTracks: 0,
-      unavailableCount: 0,
+      checkedTracks,
+      unavailableCount: unavailableTracks.length,
       newUnavailableCount: 0,
-      checkedPlaylists: 0,
+      checkedPlaylists,
       errorMessage: message,
     };
 
-    await saveRun(summary, []);
+    await saveRun(summary, unavailableTracks);
     return summary;
+  } finally {
+    await releaseCheckRunLock(CHECK_RUN_LOCK_NAME, lockOwnerId);
   }
 }
 

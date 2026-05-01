@@ -45,6 +45,19 @@ export type TrackAvailability = {
   unavailableReason: string;
 };
 
+const ACCESS_TOKEN_REFRESH_BUFFER_MS = 60_000;
+const SPOTIFY_MIN_REQUEST_INTERVAL_MS = 350;
+
+let cachedAccessToken:
+  | {
+      token: string;
+      expiresAt: number;
+    }
+  | null = null;
+let inFlightAccessTokenPromise: Promise<string> | null = null;
+let nextSpotifyRequestAt = 0;
+let spotifyRequestThrottleQueue = Promise.resolve();
+
 function parsePlaylistIdsFromEnv() {
   return getEnv()
     .SPOTIFY_PLAYLIST_IDS.split(",")
@@ -53,6 +66,24 @@ function parsePlaylistIdsFromEnv() {
 }
 
 async function getAccessToken() {
+  if (cachedAccessToken && cachedAccessToken.expiresAt > Date.now()) {
+    return cachedAccessToken.token;
+  }
+
+  if (inFlightAccessTokenPromise) {
+    return inFlightAccessTokenPromise;
+  }
+
+  inFlightAccessTokenPromise = requestAccessToken();
+
+  try {
+    return await inFlightAccessTokenPromise;
+  } finally {
+    inFlightAccessTokenPromise = null;
+  }
+}
+
+async function requestAccessToken() {
   const encodedCredentials = Buffer.from(
     `${getEnv().SPOTIFY_CLIENT_ID}:${getEnv().SPOTIFY_CLIENT_SECRET}`,
   ).toString("base64");
@@ -72,11 +103,18 @@ async function getAccessToken() {
   }
 
   const payload = (await response.json()) as SpotifyAccessTokenResponse;
+  cachedAccessToken = {
+    token: payload.access_token,
+    expiresAt: Date.now() + payload.expires_in * 1000 - ACCESS_TOKEN_REFRESH_BUFFER_MS,
+  };
+
   return payload.access_token;
 }
 
 async function spotifyGet<T>(url: string, accessToken: string): Promise<T> {
   return withRetry(async () => {
+    await waitForSpotifyRequestWindow();
+
     const response = await fetch(url, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -86,12 +124,16 @@ async function spotifyGet<T>(url: string, accessToken: string): Promise<T> {
 
     if (!response.ok) {
       const retryAfter = Number(response.headers.get("retry-after") ?? "0");
-      const error = new Error(`Spotify API request failed: ${response.status} (${url})`) as Error & {
+      const error = new Error(
+        formatSpotifyErrorMessage(response.status, url, retryAfter),
+      ) as Error & {
         status?: number;
         retryAfterSeconds?: number;
+        url?: string;
       };
       error.status = response.status;
       error.retryAfterSeconds = Number.isFinite(retryAfter) ? retryAfter : 0;
+      error.url = url;
       throw error;
     }
 
@@ -120,6 +162,10 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 4): Promise<T> {
       const retryAfterMs = retryAfterSeconds > 0 ? retryAfterSeconds * 1000 : 0;
       const jitterMs = Math.floor(Math.random() * 250);
       const delayMs = Math.max(exponentialBackoffMs, retryAfterMs) + jitterMs;
+
+      console.warn(
+        `[Spotify] Request failed with status ${status} on attempt ${attempt}/${attempts}. Retrying in ${delayMs}ms.${formatRetryLogSuffix(error, retryAfterSeconds)}`,
+      );
 
       await wait(delayMs);
     }
@@ -152,10 +198,51 @@ function getRetryAfterSecondsFromError(error: unknown) {
   return 0;
 }
 
+function formatSpotifyErrorMessage(status: number, url: string, retryAfterSeconds: number) {
+  if (status === 429 && retryAfterSeconds > 0) {
+    return `Spotify API request failed: ${status} (${url}) retry-after=${retryAfterSeconds}s`;
+  }
+
+  return `Spotify API request failed: ${status} (${url})`;
+}
+
+function formatRetryLogSuffix(error: unknown, retryAfterSeconds: number) {
+  const retryAfter =
+    retryAfterSeconds > 0 ? ` Retry-After: ${retryAfterSeconds}s.` : "";
+  const url =
+    typeof error === "object" &&
+    error !== null &&
+    "url" in error &&
+    typeof (error as { url?: unknown }).url === "string"
+      ? ` URL: ${(error as { url: string }).url}`
+      : "";
+
+  return `${retryAfter}${url}`;
+}
+
 function wait(ms: number) {
   return new Promise<void>((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+async function waitForSpotifyRequestWindow() {
+  const previous = spotifyRequestThrottleQueue;
+  let releaseQueue!: () => void;
+
+  spotifyRequestThrottleQueue = new Promise<void>((resolve) => {
+    releaseQueue = resolve;
+  });
+
+  await previous;
+
+  const waitMs = Math.max(0, nextSpotifyRequestAt - Date.now());
+  if (waitMs > 0) {
+    await wait(waitMs);
+  }
+
+  nextSpotifyRequestAt = Date.now() + SPOTIFY_MIN_REQUEST_INTERVAL_MS;
+  releaseQueue();
 }
 
 export async function fetchOwnPublicPlaylists() {
