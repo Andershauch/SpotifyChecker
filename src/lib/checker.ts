@@ -1,6 +1,8 @@
 import {
   acquireCheckRunLock,
   ensureSchema,
+  forceReleaseCheckRunLock,
+  getCheckRunLock,
   getSql,
   releaseCheckRunLock,
 } from "@/lib/db";
@@ -11,7 +13,7 @@ import {
   type TrackAvailability,
 } from "@/lib/spotify";
 
-const CHECK_RUN_LOCK_NAME = "daily-spotify-check";
+export const CHECK_RUN_LOCK_NAME = "daily-spotify-check";
 const CHECK_RUN_LOCK_TTL_SECONDS = 15 * 60;
 
 export type CheckSummary = {
@@ -21,6 +23,16 @@ export type CheckSummary = {
   newUnavailableCount: number;
   checkedPlaylists: number;
   errorMessage: string | null;
+};
+
+export type CheckRunStatus = {
+  running: boolean;
+  lock: {
+    ownerId: string;
+    startedAt: string;
+    lockedUntil: string;
+    expiresInSeconds: number;
+  } | null;
 };
 
 type ExistingUnavailableRow = {
@@ -205,4 +217,39 @@ export async function getLatestRun() {
   `) as LatestRunRow[];
 
   return rows[0] ?? null;
+}
+
+export async function getCurrentCheckRunStatus(): Promise<CheckRunStatus> {
+  await ensureSchema();
+  const lock = await getCheckRunLock(CHECK_RUN_LOCK_NAME);
+
+  if (!lock) {
+    return { running: false, lock: null };
+  }
+
+  const lockedUntilTime = new Date(lock.locked_until).getTime();
+  const expiresInSeconds = Math.max(
+    0,
+    Math.ceil((lockedUntilTime - Date.now()) / 1000),
+  );
+
+  if (expiresInSeconds === 0) {
+    return { running: false, lock: null };
+  }
+
+  return {
+    running: true,
+    lock: {
+      ownerId: lock.owner_id,
+      startedAt: lock.started_at,
+      lockedUntil: lock.locked_until,
+      expiresInSeconds,
+    },
+  };
+}
+
+export async function forceUnlockCurrentCheckRun() {
+  await ensureSchema();
+  const released = await forceReleaseCheckRunLock(CHECK_RUN_LOCK_NAME);
+  return { released: Boolean(released) };
 }

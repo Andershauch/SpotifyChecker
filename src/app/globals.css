@@ -85,6 +85,11 @@ dd {
   gap: 12px;
 }
 
+.control-grid {
+  display: grid;
+  gap: 16px;
+}
+
 .field {
   display: grid;
   gap: 6px;
@@ -128,6 +133,81 @@ button:disabled {
   cursor: not-allowed;
 }
 
+.secondary-button {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.danger-button {
+  background: #b94c1d;
+  color: #fff7f2;
+}
+
+.status-box {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px;
+  background: color-mix(in oklab, var(--surface) 96%, white 4%);
+}
+
+.status-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.pill-running {
+  background: color-mix(in oklab, var(--accent) 18%, white 82%);
+  color: #0f5d2a;
+}
+
+.pill-idle {
+  background: color-mix(in oklab, var(--border) 50%, white 50%);
+  color: var(--muted);
+}
+
+.live-stats {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.live-stats div {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+}
+
+.actions {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+
+.helper-text {
+  font-size: 0.95rem;
+}
+
 .run-message {
   margin-top: 12px;
+}
+
+@media (min-width: 760px) {
+  .control-grid {
+    grid-template-columns: minmax(0, 1.4fr) minmax(220px, 0.8fr);
+    align-items: start;
+  }
 }

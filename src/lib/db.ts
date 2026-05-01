@@ -2,7 +2,10 @@ import { neon } from "@neondatabase/serverless";
 import { getEnv } from "@/lib/env";
 
 type CheckRunLockRow = {
+  lock_name: string;
   owner_id: string;
+  started_at: string;
+  locked_until: string;
 };
 
 export function getSql() {
@@ -80,4 +83,27 @@ export async function releaseCheckRunLock(lockName: string, ownerId: string) {
     WHERE lock_name = ${lockName}
       AND owner_id = ${ownerId}
   `;
+}
+
+export async function getCheckRunLock(lockName: string) {
+  const sql = getSql();
+  const rows = (await sql`
+    SELECT lock_name, owner_id, started_at, locked_until
+    FROM check_run_lock
+    WHERE lock_name = ${lockName}
+    LIMIT 1
+  `) as CheckRunLockRow[];
+
+  return rows[0] ?? null;
+}
+
+export async function forceReleaseCheckRunLock(lockName: string) {
+  const sql = getSql();
+  const rows = (await sql`
+    DELETE FROM check_run_lock
+    WHERE lock_name = ${lockName}
+    RETURNING lock_name, owner_id, started_at, locked_until
+  `) as CheckRunLockRow[];
+
+  return rows[0] ?? null;
 }
