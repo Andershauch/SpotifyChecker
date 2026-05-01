@@ -1,25 +1,46 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 type CheckResponse = {
-  status: "ok" | "error" | "skipped";
+  status: "ok" | "error" | "skipped" | "cancelled";
   checkedTracks: number;
   unavailableCount: number;
   newUnavailableCount: number;
   checkedPlaylists: number;
+  skippedPlaylists: number;
   errorMessage: string | null;
+};
+
+type JobSnapshot = {
+  id: string;
+  status: string;
+  triggerSource: string;
+  requestedAt: string;
+  startedAt: string | null;
+  heartbeatAt: string | null;
+  checkedTracks: number;
+  checkedPlaylists: number;
+  skippedPlaylists: number;
+  unavailableCount: number;
+  newUnavailableCount: number;
+  cancelRequested: boolean;
+  errorMessage: string | null;
+  currentPlaylistName: string | null;
 };
 
 type RunStatusResponse = {
   running: boolean;
   lock: {
     ownerId: string;
+    jobId: string | null;
     startedAt: string;
     lockedUntil: string;
     expiresInSeconds: number;
   } | null;
+  job: JobSnapshot | null;
+  latestJob: JobSnapshot | null;
 };
 
 export function RunCheckPanel() {
@@ -28,8 +49,9 @@ export function RunCheckPanel() {
   const [message, setMessage] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [runStatus, setRunStatus] = useState<RunStatusResponse | null>(null);
-  const [isPending, startTransition] = useTransition();
   const [isRefreshingStatus, setIsRefreshingStatus] = useState(false);
+  const [isStarting, setIsStarting] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
   const [isUnlocking, setIsUnlocking] = useState(false);
 
   useEffect(() => {
@@ -58,12 +80,8 @@ export function RunCheckPanel() {
         }
 
         if (!response.ok) {
-          if (showErrors) {
-            const errorMessage =
-              payload && "error" in payload && payload.error
-                ? payload.error
-                : `Kunne ikke hente status (${response.status}).`;
-            setStatusMessage(errorMessage);
+          if (!cancelled && showErrors) {
+            setStatusMessage(getApiError(payload, response.status, "Kunne ikke hente status"));
           }
           return;
         }
@@ -79,10 +97,11 @@ export function RunCheckPanel() {
       }
     }
 
-    refreshStatus(true);
+    void refreshStatus(true);
+
     const intervalId = window.setInterval(() => {
       void refreshStatus(false);
-    }, 5000);
+    }, 2000);
 
     return () => {
       cancelled = true;
@@ -90,91 +109,8 @@ export function RunCheckPanel() {
     };
   }, [secret]);
 
-  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setMessage(null);
-
-    const response = await fetch("/api/check", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${secret}`,
-      },
-    });
-
-    let payload: CheckResponse | { error?: string } | null = null;
-
-    try {
-      payload = (await response.json()) as CheckResponse | { error?: string };
-    } catch {
-      payload = null;
-    }
-
-    if (!response.ok) {
-      const errorMessage =
-        payload && "error" in payload && payload.error
-          ? payload.error
-          : `Kørslen fejlede med status ${response.status}.`;
-      setMessage(errorMessage);
-      return;
-    }
-
-    const result = payload as CheckResponse;
-    const details =
-      result.status === "ok"
-        ? `Check færdigt: ${result.checkedPlaylists} playlister og ${result.checkedTracks} tracks tjekket.`
-        : result.status === "skipped"
-          ? result.errorMessage ?? "Et andet check kører allerede."
-          : result.errorMessage ?? "Spotify-check fejlede.";
-
-    setMessage(details);
-    await refreshStatusNow();
-
-    startTransition(() => {
-      router.refresh();
-    });
-  }
-
-  async function handleUnlock() {
-    setMessage(null);
-    setIsUnlocking(true);
-
-    try {
-      const response = await fetch("/api/check/unlock", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${secret}`,
-        },
-      });
-
-      let payload: { released?: boolean; error?: string } | null = null;
-
-      try {
-        payload = (await response.json()) as { released?: boolean; error?: string };
-      } catch {
-        payload = null;
-      }
-
-      if (!response.ok) {
-        const errorMessage =
-          payload?.error ?? `Kunne ikke frigive låsen (${response.status}).`;
-        setMessage(errorMessage);
-        return;
-      }
-
-      setMessage(
-        payload?.released
-          ? "Låsen er frigivet. Du kan nu starte et nyt check."
-          : "Der var ingen aktiv lås at frigive.",
-      );
-      await refreshStatusNow();
-
-      startTransition(() => {
-        router.refresh();
-      });
-    } finally {
-      setIsUnlocking(false);
-    }
-  }
+  const activeJob = runStatus?.running ? runStatus.job : runStatus?.latestJob ?? null;
+  const isRunning = runStatus?.running ?? false;
 
   async function refreshStatusNow() {
     if (!secret.trim()) {
@@ -199,11 +135,7 @@ export function RunCheckPanel() {
       }
 
       if (!response.ok) {
-        const errorMessage =
-          payload && "error" in payload && payload.error
-            ? payload.error
-            : `Kunne ikke hente status (${response.status}).`;
-        setStatusMessage(errorMessage);
+        setStatusMessage(getApiError(payload, response.status, "Kunne ikke hente status"));
         return;
       }
 
@@ -214,17 +146,123 @@ export function RunCheckPanel() {
     }
   }
 
-  const isRunning = runStatus?.running ?? false;
+  async function handleStart(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setMessage(null);
+    setIsStarting(true);
+
+    try {
+      const response = await fetch("/api/check", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${secret}`,
+        },
+      });
+
+      let payload: CheckResponse | { error?: string } | null = null;
+
+      try {
+        payload = (await response.json()) as CheckResponse | { error?: string };
+      } catch {
+        payload = null;
+      }
+
+      if (!response.ok) {
+        setMessage(getApiError(payload, response.status, "Kørslen fejlede"));
+        return;
+      }
+
+      const result = payload as CheckResponse;
+      setMessage(getSummaryMessage(result));
+      await refreshStatusNow();
+      router.refresh();
+    } finally {
+      setIsStarting(false);
+    }
+  }
+
+  async function handleCancel() {
+    setMessage(null);
+    setIsCancelling(true);
+
+    try {
+      const response = await fetch("/api/check/cancel", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${secret}`,
+        },
+      });
+
+      let payload: { requested?: boolean; error?: string } | null = null;
+
+      try {
+        payload = (await response.json()) as { requested?: boolean; error?: string };
+      } catch {
+        payload = null;
+      }
+
+      if (!response.ok) {
+        setMessage(getApiError(payload, response.status, "Kunne ikke sende stop-signal"));
+        return;
+      }
+
+      setMessage(
+        payload?.requested
+          ? "Stop er anmodet. Den aktive kørsel stopper ved næste sikre checkpoint."
+          : "Der er ingen aktiv kørsel at stoppe.",
+      );
+      await refreshStatusNow();
+    } finally {
+      setIsCancelling(false);
+    }
+  }
+
+  async function handleUnlock() {
+    setMessage(null);
+    setIsUnlocking(true);
+
+    try {
+      const response = await fetch("/api/check/unlock", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${secret}`,
+        },
+      });
+
+      let payload: { released?: boolean; error?: string } | null = null;
+
+      try {
+        payload = (await response.json()) as { released?: boolean; error?: string };
+      } catch {
+        payload = null;
+      }
+
+      if (!response.ok) {
+        setMessage(getApiError(payload, response.status, "Kunne ikke frigive låsen"));
+        return;
+      }
+
+      setMessage(
+        payload?.released
+          ? "Låsen er frigivet manuelt. Brug kun dette, hvis et job er fastlåst."
+          : "Der var ingen aktiv lås at frigive.",
+      );
+      await refreshStatusNow();
+      router.refresh();
+    } finally {
+      setIsUnlocking(false);
+    }
+  }
 
   return (
     <section className="card">
       <h2>Kontrolpanel</h2>
       <p>
-        Start et manuelt Spotify-check, se om der kører et aktivt run, og frigiv
-        en fastlåst kørsel direkte herfra.
+        Start et check, se live progress og stop en aktiv kørsel uden at skulle
+        vente på en lang timeout.
       </p>
 
-      <form className="run-form" onSubmit={handleSubmit}>
+      <form className="run-form" onSubmit={handleStart}>
         <label className="field">
           <span>CRON_SECRET</span>
           <input
@@ -237,6 +275,7 @@ export function RunCheckPanel() {
               if (!nextValue.trim()) {
                 setRunStatus(null);
                 setStatusMessage(null);
+                setMessage(null);
               }
             }}
             placeholder="Indsæt secret"
@@ -249,7 +288,7 @@ export function RunCheckPanel() {
           <div className="status-box">
             <div className="status-line">
               <span className={isRunning ? "pill pill-running" : "pill pill-idle"}>
-                {isRunning ? "Kører nu" : "Ingen aktiv kørsel"}
+                {isRunning ? "Aktivt job kører" : "Ingen aktiv kørsel"}
               </span>
               <button
                 type="button"
@@ -257,31 +296,74 @@ export function RunCheckPanel() {
                 onClick={() => {
                   void refreshStatusNow();
                 }}
-                disabled={isRefreshingStatus || secret.trim().length === 0}
+                disabled={!secret.trim() || isRefreshingStatus}
               >
                 {isRefreshingStatus ? "Opdaterer..." : "Opdater status"}
               </button>
             </div>
 
-            {runStatus?.lock ? (
-              <dl className="live-stats">
-                <div>
-                  <dt>Startet</dt>
-                  <dd>{formatDateTime(runStatus.lock.startedAt)}</dd>
-                </div>
-                <div>
-                  <dt>Låst til</dt>
-                  <dd>{formatDateTime(runStatus.lock.lockedUntil)}</dd>
-                </div>
-                <div>
-                  <dt>Udløber om</dt>
-                  <dd>{formatSeconds(runStatus.lock.expiresInSeconds)}</dd>
-                </div>
-              </dl>
+            {activeJob ? (
+              <div className="status-stack">
+                <dl className="live-stats">
+                  <div>
+                    <dt>Jobstatus</dt>
+                    <dd>{formatJobStatus(activeJob.status)}</dd>
+                  </div>
+                  <div>
+                    <dt>Trigger</dt>
+                    <dd>{activeJob.triggerSource === "cron" ? "Cron" : "Manuel"}</dd>
+                  </div>
+                  <div>
+                    <dt>Playlister tjekket</dt>
+                    <dd>{activeJob.checkedPlaylists}</dd>
+                  </div>
+                  <div>
+                    <dt>Playlister sprunget over</dt>
+                    <dd>{activeJob.skippedPlaylists}</dd>
+                  </div>
+                  <div>
+                    <dt>Tracks tjekket</dt>
+                    <dd>{activeJob.checkedTracks}</dd>
+                  </div>
+                  <div>
+                    <dt>Utilgængelige fundet</dt>
+                    <dd>{activeJob.unavailableCount}</dd>
+                  </div>
+                </dl>
+
+                <dl className="live-stats">
+                  <div>
+                    <dt>Startet</dt>
+                    <dd>{activeJob.startedAt ? formatDateTime(activeJob.startedAt) : "-"}</dd>
+                  </div>
+                  <div>
+                    <dt>Sidste heartbeat</dt>
+                    <dd>{activeJob.heartbeatAt ? formatDateTime(activeJob.heartbeatAt) : "-"}</dd>
+                  </div>
+                  <div>
+                    <dt>Stop ønsket</dt>
+                    <dd>{activeJob.cancelRequested ? "Ja" : "Nej"}</dd>
+                  </div>
+                  <div>
+                    <dt>Aktuel playlist</dt>
+                    <dd>{activeJob.currentPlaylistName ?? "-"}</dd>
+                  </div>
+                </dl>
+
+                {runStatus?.lock ? (
+                  <p className="helper-text">
+                    Låsen udløber om {formatSeconds(runStatus.lock.expiresInSeconds)}.
+                  </p>
+                ) : null}
+
+                {activeJob.errorMessage ? (
+                  <p className="run-message">{activeJob.errorMessage}</p>
+                ) : null}
+              </div>
             ) : (
               <p className="helper-text">
-                Indtast secret for at hente live-status. Panelet opdaterer derefter
-                automatisk hvert 5. sekund.
+                Indtast secret for at hente live-status. Panelet opdaterer automatisk
+                hvert 2. sekund, når der er kontakt.
               </p>
             )}
 
@@ -291,25 +373,36 @@ export function RunCheckPanel() {
           <div className="actions">
             <button
               type="submit"
-              disabled={isPending || secret.trim().length === 0 || isRunning}
+              disabled={!secret.trim() || isRunning || isStarting}
             >
-              {isPending ? "Starter..." : isRunning ? "Check kører allerede" : "Kør check nu"}
+              {isStarting ? "Starter..." : isRunning ? "Job kører allerede" : "Start check"}
             </button>
 
             <button
               type="button"
               className="danger-button"
               onClick={() => {
+                void handleCancel();
+              }}
+              disabled={!secret.trim() || !isRunning || isCancelling}
+            >
+              {isCancelling ? "Stopper..." : "Stop job"}
+            </button>
+
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => {
                 void handleUnlock();
               }}
-              disabled={!isRunning || isUnlocking || secret.trim().length === 0}
+              disabled={!secret.trim() || !isRunning || isUnlocking}
             >
-              {isUnlocking ? "Frigiver..." : "Frigiv lås"}
+              {isUnlocking ? "Frigiver..." : "Nød-frigiv lås"}
             </button>
 
             <p className="helper-text">
-              “Frigiv lås” rydder en fastlåst status, men stopper ikke nødvendigvis en
-              request, der allerede kører på serveren lige nu.
+              “Stop job” sender et cancel-signal, som processen tjekker mellem
+              Spotify-kald. “Nød-frigiv lås” er kun til fastlåste jobs.
             </p>
           </div>
         </div>
@@ -318,6 +411,32 @@ export function RunCheckPanel() {
       {message ? <p className="run-message">{message}</p> : null}
     </section>
   );
+}
+
+function getApiError(
+  payload: { error?: string } | RunStatusResponse | CheckResponse | null,
+  status: number,
+  fallback: string,
+) {
+  return payload && "error" in payload && payload.error
+    ? payload.error
+    : `${fallback} (${status}).`;
+}
+
+function getSummaryMessage(result: CheckResponse) {
+  if (result.status === "ok") {
+    return `Check færdigt: ${result.checkedPlaylists} playlister tjekket, ${result.skippedPlaylists} sprunget over og ${result.checkedTracks} tracks gennemgået.`;
+  }
+
+  if (result.status === "cancelled") {
+    return result.errorMessage ?? "Kørslen blev stoppet manuelt.";
+  }
+
+  if (result.status === "skipped") {
+    return result.errorMessage ?? "Kørslen blev sprunget over.";
+  }
+
+  return result.errorMessage ?? "Spotify-check fejlede.";
 }
 
 function formatDateTime(value: string) {
@@ -335,4 +454,25 @@ function formatSeconds(value: number) {
   const minutes = Math.floor(value / 60);
   const seconds = value % 60;
   return `${minutes}m ${seconds}s`;
+}
+
+function formatJobStatus(status: string) {
+  switch (status) {
+    case "queued":
+      return "I kø";
+    case "running":
+      return "Kører";
+    case "cancel_requested":
+      return "Stop ønsket";
+    case "cancelled":
+      return "Stoppet";
+    case "ok":
+      return "Færdig";
+    case "skipped":
+      return "Sprunget over";
+    case "error":
+      return "Fejl";
+    default:
+      return status;
+  }
 }

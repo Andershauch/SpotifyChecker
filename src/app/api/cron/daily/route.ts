@@ -8,6 +8,6 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const result = await runDailyCheck();
+  const result = await runDailyCheck("cron");
   return NextResponse.json(result);
 }

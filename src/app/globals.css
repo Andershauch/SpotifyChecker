@@ -159,6 +159,11 @@ button:disabled {
   flex-wrap: wrap;
 }
 
+.status-stack {
+  display: grid;
+  gap: 12px;
+}
+
 .pill {
   display: inline-flex;
   align-items: center;

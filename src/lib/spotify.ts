@@ -2,7 +2,6 @@ import { getEnv } from "@/lib/env";
 
 type SpotifyAccessTokenResponse = {
   access_token: string;
-  token_type: string;
   expires_in: number;
 };
 
@@ -18,6 +17,10 @@ type PlaylistItem = {
     id: string;
   };
   public: boolean | null;
+  snapshot_id?: string;
+  tracks?: {
+    total?: number;
+  };
 };
 
 type TrackEntry = {
@@ -35,6 +38,17 @@ type TrackEntry = {
   } | null;
 };
 
+export type SpotifyExecutionContext = {
+  onCheckpoint?: () => Promise<void>;
+};
+
+export type PlaylistSummary = {
+  id: string;
+  name: string;
+  snapshotId: string | null;
+  trackTotal: number | null;
+};
+
 export type TrackAvailability = {
   playlistId: string;
   playlistName: string;
@@ -46,7 +60,7 @@ export type TrackAvailability = {
 };
 
 const ACCESS_TOKEN_REFRESH_BUFFER_MS = 60_000;
-const SPOTIFY_MIN_REQUEST_INTERVAL_MS = 350;
+const SPOTIFY_MIN_REQUEST_INTERVAL_MS = 300;
 
 let cachedAccessToken:
   | {
@@ -111,37 +125,49 @@ async function requestAccessToken() {
   return payload.access_token;
 }
 
-async function spotifyGet<T>(url: string, accessToken: string): Promise<T> {
-  return withRetry(async () => {
-    await waitForSpotifyRequestWindow();
+async function spotifyGet<T>(
+  url: string,
+  accessToken: string,
+  context?: SpotifyExecutionContext,
+): Promise<T> {
+  return withRetry(
+    async () => {
+      await context?.onCheckpoint?.();
+      await waitForSpotifyRequestWindow(context);
 
-    const response = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-      cache: "no-store",
-    });
+      const response = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+        cache: "no-store",
+      });
 
-    if (!response.ok) {
-      const retryAfter = Number(response.headers.get("retry-after") ?? "0");
-      const error = new Error(
-        formatSpotifyErrorMessage(response.status, url, retryAfter),
-      ) as Error & {
-        status?: number;
-        retryAfterSeconds?: number;
-        url?: string;
-      };
-      error.status = response.status;
-      error.retryAfterSeconds = Number.isFinite(retryAfter) ? retryAfter : 0;
-      error.url = url;
-      throw error;
-    }
+      if (!response.ok) {
+        const retryAfter = Number(response.headers.get("retry-after") ?? "0");
+        const error = new Error(
+          formatSpotifyErrorMessage(response.status, url, retryAfter),
+        ) as Error & {
+          status?: number;
+          retryAfterSeconds?: number;
+          url?: string;
+        };
+        error.status = response.status;
+        error.retryAfterSeconds = Number.isFinite(retryAfter) ? retryAfter : 0;
+        error.url = url;
+        throw error;
+      }
 
-    return (await response.json()) as T;
-  });
+      return (await response.json()) as T;
+    },
+    context,
+  );
 }
 
-async function withRetry<T>(fn: () => Promise<T>, attempts = 4): Promise<T> {
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  context?: SpotifyExecutionContext,
+  attempts = 4,
+): Promise<T> {
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -167,7 +193,7 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 4): Promise<T> {
         `[Spotify] Request failed with status ${status} on attempt ${attempt}/${attempts}. Retrying in ${delayMs}ms.${formatRetryLogSuffix(error, retryAfterSeconds)}`,
       );
 
-      await wait(delayMs);
+      await wait(delayMs, context);
     }
   }
 
@@ -220,13 +246,21 @@ function formatRetryLogSuffix(error: unknown, retryAfterSeconds: number) {
   return `${retryAfter}${url}`;
 }
 
-function wait(ms: number) {
-  return new Promise<void>((resolve) => {
-    setTimeout(resolve, ms);
-  });
+async function wait(ms: number, context?: SpotifyExecutionContext) {
+  const sliceMs = 500;
+  let remaining = ms;
+
+  while (remaining > 0) {
+    await context?.onCheckpoint?.();
+    const currentDelay = Math.min(sliceMs, remaining);
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, currentDelay);
+    });
+    remaining -= currentDelay;
+  }
 }
 
-async function waitForSpotifyRequestWindow() {
+async function waitForSpotifyRequestWindow(context?: SpotifyExecutionContext) {
   const previous = spotifyRequestThrottleQueue;
   let releaseQueue!: () => void;
 
@@ -235,29 +269,37 @@ async function waitForSpotifyRequestWindow() {
   });
 
   await previous;
+  await context?.onCheckpoint?.();
 
   const waitMs = Math.max(0, nextSpotifyRequestAt - Date.now());
   if (waitMs > 0) {
-    await wait(waitMs);
+    await wait(waitMs, context);
   }
 
   nextSpotifyRequestAt = Date.now() + SPOTIFY_MIN_REQUEST_INTERVAL_MS;
   releaseQueue();
 }
 
-export async function fetchOwnPublicPlaylists() {
+export async function fetchOwnPublicPlaylists(context?: SpotifyExecutionContext) {
   const accessToken = await getAccessToken();
   const explicitPlaylistIds = parsePlaylistIdsFromEnv();
 
   if (explicitPlaylistIds.length > 0) {
-    const playlists: PlaylistItem[] = [];
+    const playlists: PlaylistSummary[] = [];
 
     for (const playlistId of explicitPlaylistIds) {
       const playlist = await spotifyGet<PlaylistItem>(
-        `https://api.spotify.com/v1/playlists/${encodeURIComponent(playlistId)}`,
+        `https://api.spotify.com/v1/playlists/${encodeURIComponent(playlistId)}?fields=id,name,owner(id),public,snapshot_id,tracks(total)`,
         accessToken,
+        context,
       );
-      playlists.push(playlist);
+
+      playlists.push({
+        id: playlist.id,
+        name: playlist.name,
+        snapshotId: playlist.snapshot_id ?? null,
+        trackTotal: playlist.tracks?.total ?? null,
+      });
     }
 
     return { accessToken, playlists };
@@ -269,15 +311,22 @@ export async function fetchOwnPublicPlaylists() {
     );
   }
 
-  const playlistMap = new Map<string, PlaylistItem>();
-  let url: string | null = `https://api.spotify.com/v1/users/${encodeURIComponent(getEnv().SPOTIFY_USER_ID)}/playlists?limit=50`;
+  const playlistMap = new Map<string, PlaylistSummary>();
+  let url: string | null =
+    `https://api.spotify.com/v1/users/${encodeURIComponent(getEnv().SPOTIFY_USER_ID)}/playlists` +
+    "?limit=50&fields=items(id,name,owner(id),public,snapshot_id,tracks(total)),next";
 
   while (url) {
-    const page: SpotifyPaging<PlaylistItem> = await spotifyGet(url, accessToken);
+    const page: SpotifyPaging<PlaylistItem> = await spotifyGet(url, accessToken, context);
 
     for (const playlist of page.items) {
       if (playlist.owner.id === getEnv().SPOTIFY_USER_ID && playlist.public === true) {
-        playlistMap.set(playlist.id, playlist);
+        playlistMap.set(playlist.id, {
+          id: playlist.id,
+          name: playlist.name,
+          snapshotId: playlist.snapshot_id ?? null,
+          trackTotal: playlist.tracks?.total ?? null,
+        });
       }
     }
 
@@ -291,15 +340,22 @@ export async function fetchUnavailableTracksForPlaylist(
   playlistId: string,
   playlistName: string,
   accessToken: string,
+  context?: SpotifyExecutionContext,
 ): Promise<{ unavailable: TrackAvailability[]; checked: number }> {
-  let url: string | null = `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=100&market=${getEnv().SPOTIFY_MARKET}`;
+  let url: string | null =
+    `https://api.spotify.com/v1/playlists/${playlistId}/tracks` +
+    `?limit=100&market=${getEnv().SPOTIFY_MARKET}` +
+    "&fields=items(track(id,name,is_playable,restrictions(reason),external_urls(spotify),artists(name))),next";
+
   const unavailable: TrackAvailability[] = [];
   let checked = 0;
 
   while (url) {
-    const page: SpotifyPaging<TrackEntry> = await spotifyGet(url, accessToken);
+    const page: SpotifyPaging<TrackEntry> = await spotifyGet(url, accessToken, context);
 
     for (const item of page.items) {
+      await context?.onCheckpoint?.();
+
       const track = item.track;
       if (!track?.id) {
         continue;

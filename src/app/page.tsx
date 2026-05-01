@@ -34,6 +34,8 @@ export default async function Home() {
               <dd>
                 {latestRun.status === "ok"
                   ? "OK"
+                  : latestRun.status === "cancelled"
+                    ? "Stoppet"
                   : latestRun.status === "skipped"
                     ? "Sprunget over"
                     : "Fejl"}
@@ -42,6 +44,10 @@ export default async function Home() {
             <div>
               <dt>Playlister tjekket</dt>
               <dd>{latestRun.payload?.checkedPlaylists ?? 0}</dd>
+            </div>
+            <div>
+              <dt>Playlister sprunget over</dt>
+              <dd>{latestRun.payload?.skippedPlaylists ?? 0}</dd>
             </div>
             <div>
               <dt>Tracks tjekket</dt>

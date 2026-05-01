@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getCurrentCheckRunStatus } from "@/lib/checker";
+import { getCurrentCheckRunStatus, getLatestJobSnapshot } from "@/lib/checker";
 import { getEnv } from "@/lib/env";
 
 export async function GET(request: Request) {
@@ -8,6 +8,10 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const result = await getCurrentCheckRunStatus();
-  return NextResponse.json(result);
+  const [current, latestJob] = await Promise.all([
+    getCurrentCheckRunStatus(),
+    getLatestJobSnapshot(),
+  ]);
+
+  return NextResponse.json({ ...current, latestJob });
 }

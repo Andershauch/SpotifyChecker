@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { runDailyCheck } from "@/lib/checker";
+import { requestCancelCurrentCheckRun } from "@/lib/checker";
 import { getEnv } from "@/lib/env";
 
 export async function POST(request: Request) {
@@ -8,6 +8,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const result = await runDailyCheck("manual");
+  const result = await requestCancelCurrentCheckRun();
   return NextResponse.json(result);
 }
