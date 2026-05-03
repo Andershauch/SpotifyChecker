@@ -7,6 +7,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const result = await requestCheckRun("manual");
+  const result = await requestCheckRun("manual", {
+    playlistLimit: 5,
+    ignoreCheckpoints: true,
+  });
+
   return NextResponse.json(result, { status: result.accepted ? 202 : 409 });
 }

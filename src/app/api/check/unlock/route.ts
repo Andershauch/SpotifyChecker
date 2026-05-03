@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
 import { forceUnlockCurrentCheckRun } from "@/lib/checker";
-import { getEnv } from "@/lib/env";
+import { isAdminRequestAuthorized } from "@/lib/auth";
 
 export async function POST(request: Request) {
-  const auth = request.headers.get("authorization");
-  if (auth !== `Bearer ${getEnv().CRON_SECRET}`) {
+  if (!(await isAdminRequestAuthorized(request))) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

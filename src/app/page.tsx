@@ -10,36 +10,61 @@ function formatDate(dateString: string) {
 
 export default async function Home() {
   const latestRun = await getLatestRun();
+  const latestStatusLabel = latestRun
+    ? latestRun.status === "ok"
+      ? "OK"
+      : latestRun.status === "cancelled"
+        ? "Stoppet"
+        : latestRun.status === "skipped"
+          ? "Sprunget over"
+          : "Fejl"
+    : null;
 
   return (
     <main className="container">
-      <section className="card">
-        <h1>SpotifyCheck</h1>
-        <p>
-          Daglig overvågning af dine offentlige Spotify-playlister for tracks,
-          der ikke er tilgængelige i din region.
-        </p>
+      <section className="card hero-card">
+        <div className="hero-copy">
+          <p className="eyebrow">Operationspanel</p>
+          <h1>SpotifyCheck</h1>
+          <p>
+            Daglig overvågning af dine offentlige Spotify-playlister for tracks,
+            der ikke er tilgængelige i din region.
+          </p>
+        </div>
+
+        <div className="hero-badges">
+          <span className="hero-badge">Single-user Spotify OAuth</span>
+          <span className="hero-badge">Quota-aware checks</span>
+          <span className="hero-badge">Track availability alerts</span>
+        </div>
       </section>
 
-      <section className="card">
-        <h2>Seneste afsluttede kørsel</h2>
+      <section className="card run-overview">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Seneste afsluttede kørsel</p>
+            <h2>Sidste kendte resultat</h2>
+          </div>
+          {latestStatusLabel ? (
+            <span
+              className={`pill ${
+                latestRun?.status === "ok"
+                  ? "pill-ready"
+                  : latestRun?.status === "error"
+                    ? "pill-danger"
+                    : "pill-idle"
+              }`}
+            >
+              {latestStatusLabel}
+            </span>
+          ) : null}
+        </div>
+
         {latestRun ? (
-          <dl className="stats">
+          <dl className="stats stats-compact">
             <div>
               <dt>Tidspunkt</dt>
               <dd>{formatDate(latestRun.run_at)}</dd>
-            </div>
-            <div>
-              <dt>Status</dt>
-              <dd>
-                {latestRun.status === "ok"
-                  ? "OK"
-                  : latestRun.status === "cancelled"
-                    ? "Stoppet"
-                  : latestRun.status === "skipped"
-                    ? "Sprunget over"
-                    : "Fejl"}
-              </dd>
             </div>
             <div>
               <dt>Playlister tjekket</dt>

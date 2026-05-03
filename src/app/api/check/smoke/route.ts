@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requestCheckRun } from "@/lib/checker";
+import { runSpotifySmokeCheck } from "@/lib/checker";
 import { isAdminRequestAuthorized } from "@/lib/auth";
 
 export async function POST(request: Request) {
@@ -7,6 +7,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const result = await requestCheckRun("manual");
-  return NextResponse.json(result, { status: result.accepted ? 202 : 409 });
+  const result = await runSpotifySmokeCheck();
+  const status = result.status === "error" ? 500 : 200;
+  return NextResponse.json(result, { status });
 }

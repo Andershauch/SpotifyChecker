@@ -1,8 +1,20 @@
+import {
+  clearSpotifyAuthState,
+  clearSpotifySessionState,
+  getSpotifyAuthState,
+  getSpotifySessionState,
+  replaceOwnedPublicPlaylists,
+  setSpotifyAuthState,
+  setSpotifySessionState,
+  type SpotifySessionState,
+} from "@/lib/db";
 import { getEnv } from "@/lib/env";
 
-type SpotifyAccessTokenResponse = {
+type SpotifyTokenResponse = {
   access_token: string;
   expires_in: number;
+  refresh_token?: string;
+  scope?: string;
 };
 
 type SpotifyPaging<T> = {
@@ -24,22 +36,29 @@ type PlaylistItem = {
 };
 
 type TrackEntry = {
-  track: {
+  item: {
     id: string | null;
     name: string;
+    duration_ms?: number;
     is_playable?: boolean;
+    type?: string;
     restrictions?: {
       reason?: string;
     };
-    external_urls?: {
-      spotify?: string;
-    };
-    artists: Array<{ name: string }>;
   } | null;
+};
+
+type CurrentSpotifyUserProfile = {
+  id: string;
+  display_name?: string | null;
 };
 
 export type SpotifyExecutionContext = {
   onCheckpoint?: () => Promise<void>;
+  onTrackScanProgress?: (progress: {
+    checkedInPlaylist: number;
+    unavailableInPlaylist: number;
+  }) => Promise<void>;
 };
 
 export type PlaylistSummary = {
@@ -54,47 +73,116 @@ export type TrackAvailability = {
   playlistName: string;
   trackId: string;
   trackName: string;
-  artists: string;
-  trackUrl: string | null;
+  durationMs: number | null;
   unavailableReason: string;
+};
+
+export type SpotifyConnectionStatus = {
+  connected: boolean;
+  spotifyUserId: string | null;
+  displayName: string | null;
+  connectedAt: string | null;
+  expiresAt: string | null;
+};
+
+type SpotifyRequestError = Error & {
+  status?: number;
+  retryAfterSeconds?: number;
+  url?: string;
+  spotifyRateLimitUntil?: string;
 };
 
 const ACCESS_TOKEN_REFRESH_BUFFER_MS = 60_000;
 const SPOTIFY_MIN_REQUEST_INTERVAL_MS = 300;
 const SPOTIFY_FETCH_TIMEOUT_MS = 15_000;
 const MAX_RETRY_AFTER_SECONDS = 120;
+const SPOTIFY_SCOPES = ["playlist-read-private", "playlist-read-collaborative"];
 
-let cachedAccessToken:
-  | {
-      token: string;
-      expiresAt: number;
-    }
-  | null = null;
 let inFlightAccessTokenPromise: Promise<string> | null = null;
 let nextSpotifyRequestAt = 0;
 let spotifyRequestThrottleQueue = Promise.resolve();
 
-function parsePlaylistIdsFromEnv() {
-  return getEnv()
-    .SPOTIFY_PLAYLIST_IDS.split(",")
-    .map((id) => id.trim())
-    .filter(Boolean);
+export async function getSpotifyConnectionStatus(): Promise<SpotifyConnectionStatus> {
+  const session = await getSpotifySessionState();
+
+  return {
+    connected: Boolean(session),
+    spotifyUserId: session?.spotifyUserId ?? null,
+    displayName: session?.displayName ?? null,
+    connectedAt: session?.connectedAt ?? null,
+    expiresAt: session?.expiresAt ?? null,
+  };
 }
 
-export function getPlaylistIdsFromEnv() {
-  return parsePlaylistIdsFromEnv();
+export async function createSpotifyAuthorizationUrl() {
+  const state = crypto.randomUUID();
+  await setSpotifyAuthState({
+    state,
+    createdAt: new Date().toISOString(),
+  });
+
+  const params = new URLSearchParams({
+    client_id: getEnv().SPOTIFY_CLIENT_ID,
+    response_type: "code",
+    redirect_uri: getEnv().SPOTIFY_REDIRECT_URI,
+    state,
+    scope: SPOTIFY_SCOPES.join(" "),
+  });
+
+  return `https://accounts.spotify.com/authorize?${params.toString()}`;
+}
+
+export async function completeSpotifyAuthorization(input: {
+  code: string;
+  state: string;
+}) {
+  const savedState = await getSpotifyAuthState();
+  if (!savedState || savedState.state !== input.state) {
+    throw new Error("Spotify OAuth state matcher ikke. Prøv at forbinde kontoen igen.");
+  }
+
+  const tokenResponse = await requestSpotifyToken({
+    grantType: "authorization_code",
+    params: {
+      code: input.code,
+      redirect_uri: getEnv().SPOTIFY_REDIRECT_URI,
+    },
+  });
+
+  const accessToken = tokenResponse.access_token;
+  const refreshToken = tokenResponse.refresh_token;
+
+  if (!refreshToken) {
+    throw new Error("Spotify returnerede ikke et refresh token.");
+  }
+
+  const profile = await fetchCurrentSpotifyUserProfile(accessToken);
+  const existingSession = await getSpotifySessionState();
+  if (existingSession && existingSession.spotifyUserId !== profile.id) {
+    throw new Error("Denne app er allerede forbundet til en anden Spotify-bruger.");
+  }
+  const session = buildSpotifySessionState(tokenResponse, refreshToken, profile);
+  await setSpotifySessionState(session);
+  await clearSpotifyAuthState();
+
+  return {
+    spotifyUserId: profile.id,
+    displayName: profile.display_name ?? null,
+  };
+}
+
+export async function disconnectSpotifySession() {
+  await replaceOwnedPublicPlaylists([]);
+  await clearSpotifyAuthState();
+  await clearSpotifySessionState();
 }
 
 async function getAccessToken() {
-  if (cachedAccessToken && cachedAccessToken.expiresAt > Date.now()) {
-    return cachedAccessToken.token;
-  }
-
   if (inFlightAccessTokenPromise) {
     return inFlightAccessTokenPromise;
   }
 
-  inFlightAccessTokenPromise = requestAccessToken();
+  inFlightAccessTokenPromise = getValidSpotifyUserAccessToken();
 
   try {
     return await inFlightAccessTokenPromise;
@@ -107,10 +195,136 @@ export async function getSpotifyAccessToken() {
   return getAccessToken();
 }
 
-async function requestAccessToken() {
+export async function fetchOwnPublicPlaylists(context?: SpotifyExecutionContext) {
+  const session = await getRequiredSpotifySession();
+  const accessToken = await getAccessToken();
+  const playlists = await fetchCurrentUserPublicPlaylists(
+    accessToken,
+    session.spotifyUserId,
+    context,
+  );
+
+  // The database copy is intentionally minimal and acts as an operational
+  // catalog for checkpoints/resume logic rather than a full Spotify cache.
+  await replaceOwnedPublicPlaylists(
+    playlists.map((playlist) => ({ playlistId: playlist.id })),
+  );
+
+  return { accessToken, playlists };
+}
+
+export async function fetchUnavailableTracksForPlaylist(
+  playlistId: string,
+  playlistName: string,
+  accessToken: string,
+  context?: SpotifyExecutionContext,
+): Promise<{ unavailable: TrackAvailability[]; checked: number }> {
+  // Spotify's nested `fields` filtering for playlist items has proven too
+  // aggressive here and can collapse real items into `{}` objects. We therefore
+  // fetch the normal item payload and only keep the minimal fields in memory.
+  let url: string | null =
+    `https://api.spotify.com/v1/playlists/${playlistId}/items` +
+    `?limit=100&market=${getEnv().SPOTIFY_MARKET}`;
+
+  const unavailable: TrackAvailability[] = [];
+  let checked = 0;
+
+  while (url) {
+    const page: SpotifyPaging<TrackEntry> = await spotifyGet(url, accessToken, context);
+
+    for (const item of page.items) {
+      await context?.onCheckpoint?.();
+
+      const track = item.item;
+      if (!track?.id) {
+        continue;
+      }
+
+      if (track.type !== "track") {
+        continue;
+      }
+
+      checked += 1;
+
+      const isUnavailableByPlayableFlag = track.is_playable === false;
+      const isUnavailableByRestriction = track.restrictions?.reason === "market";
+
+      if (!isUnavailableByPlayableFlag && !isUnavailableByRestriction) {
+        continue;
+      }
+
+      unavailable.push({
+        playlistId,
+        playlistName,
+        trackId: track.id,
+        trackName: track.name,
+        durationMs: typeof track.duration_ms === "number" ? track.duration_ms : null,
+        unavailableReason: track.restrictions?.reason ?? "not_playable",
+      });
+    }
+
+    await context?.onTrackScanProgress?.({
+      checkedInPlaylist: checked,
+      unavailableInPlaylist: unavailable.length,
+    });
+
+    url = page.next;
+  }
+
+  return { unavailable, checked };
+}
+
+async function getRequiredSpotifySession() {
+  const session = await getSpotifySessionState();
+
+  if (!session) {
+    throw new Error("Spotify er ikke forbundet endnu. Log ind med Spotify først.");
+  }
+
+  return session;
+}
+
+async function getValidSpotifyUserAccessToken() {
+  const session = await getRequiredSpotifySession();
+  const expiresAt = new Date(session.expiresAt).getTime();
+
+  if (expiresAt - ACCESS_TOKEN_REFRESH_BUFFER_MS > Date.now()) {
+    return session.accessToken;
+  }
+
+  // Access tokens are refreshed server-side so the UI never needs the client
+  // secret or raw refresh token.
+  const tokenResponse = await requestSpotifyToken({
+    grantType: "refresh_token",
+    params: {
+      refresh_token: session.refreshToken,
+    },
+  });
+
+  const nextSession: SpotifySessionState = {
+    ...session,
+    accessToken: tokenResponse.access_token,
+    refreshToken: tokenResponse.refresh_token ?? session.refreshToken,
+    expiresAt: new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString(),
+    scope: tokenResponse.scope ?? session.scope,
+  };
+
+  await setSpotifySessionState(nextSession);
+  return nextSession.accessToken;
+}
+
+async function requestSpotifyToken(input: {
+  grantType: "authorization_code" | "refresh_token";
+  params: Record<string, string>;
+}) {
   const encodedCredentials = Buffer.from(
     `${getEnv().SPOTIFY_CLIENT_ID}:${getEnv().SPOTIFY_CLIENT_SECRET}`,
   ).toString("base64");
+
+  const body = new URLSearchParams({
+    grant_type: input.grantType,
+    ...input.params,
+  });
 
   const response = await fetchWithTimeout("https://accounts.spotify.com/api/token", {
     method: "POST",
@@ -118,21 +332,74 @@ async function requestAccessToken() {
       Authorization: `Basic ${encodedCredentials}`,
       "Content-Type": "application/x-www-form-urlencoded",
     },
-    body: "grant_type=client_credentials",
+    body: body.toString(),
     cache: "no-store",
   });
 
   if (!response.ok) {
-    throw new Error(`Spotify token request failed: ${response.status}`);
+    const errorDetails = await readSpotifyErrorDetails(response);
+    throw new Error(
+      `Spotify token request failed: ${response.status}${errorDetails ? ` ${errorDetails}` : ""}`,
+    );
   }
 
-  const payload = (await response.json()) as SpotifyAccessTokenResponse;
-  cachedAccessToken = {
-    token: payload.access_token,
-    expiresAt: Date.now() + payload.expires_in * 1000 - ACCESS_TOKEN_REFRESH_BUFFER_MS,
-  };
+  return (await response.json()) as SpotifyTokenResponse;
+}
 
-  return payload.access_token;
+async function fetchCurrentSpotifyUserProfile(accessToken: string) {
+  return spotifyGet<CurrentSpotifyUserProfile>(
+    "https://api.spotify.com/v1/me?fields=id,display_name",
+    accessToken,
+  );
+}
+
+async function fetchCurrentUserPublicPlaylists(
+  accessToken: string,
+  spotifyUserId: string,
+  context?: SpotifyExecutionContext,
+) {
+  const playlistMap = new Map<string, PlaylistSummary>();
+  // /me/playlists is the user-safe replacement for older user-playlist lookup
+  // flows and keeps us inside Spotify's current development-mode constraints.
+  let url: string | null =
+    "https://api.spotify.com/v1/me/playlists?limit=50&fields=items(id,name,owner(id),public,snapshot_id,tracks(total)),next";
+
+  while (url) {
+    const page: SpotifyPaging<PlaylistItem> = await spotifyGet(url, accessToken, context);
+
+    for (const playlist of page.items) {
+      if (playlist.owner.id !== spotifyUserId || playlist.public !== true) {
+        continue;
+      }
+
+      playlistMap.set(playlist.id, {
+        id: playlist.id,
+        name: playlist.name,
+        snapshotId: playlist.snapshot_id ?? null,
+        trackTotal: playlist.tracks?.total ?? null,
+      });
+    }
+
+    url = page.next;
+  }
+
+  return [...playlistMap.values()];
+}
+
+function buildSpotifySessionState(
+  tokenResponse: SpotifyTokenResponse,
+  refreshToken: string,
+  profile: CurrentSpotifyUserProfile,
+): SpotifySessionState {
+  return {
+    accessToken: tokenResponse.access_token,
+    refreshToken,
+    expiresAt: new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString(),
+    scope: tokenResponse.scope ?? "",
+    spotifyUserId: profile.id,
+    displayName: profile.display_name ?? null,
+    connectedAt: new Date().toISOString(),
+  };
 }
 
 async function spotifyGet<T>(
@@ -156,14 +423,15 @@ async function spotifyGet<T>(
         const retryAfter = Number(response.headers.get("retry-after") ?? "0");
         const error = new Error(
           formatSpotifyErrorMessage(response.status, url, retryAfter),
-        ) as Error & {
-          status?: number;
-          retryAfterSeconds?: number;
-          url?: string;
-        };
+        ) as SpotifyRequestError;
         error.status = response.status;
         error.retryAfterSeconds = Number.isFinite(retryAfter) ? retryAfter : 0;
         error.url = url;
+        if (response.status === 429 && error.retryAfterSeconds > 0) {
+          error.spotifyRateLimitUntil = new Date(
+            Date.now() + error.retryAfterSeconds * 1000,
+          ).toISOString();
+        }
         throw error;
       }
 
@@ -195,9 +463,16 @@ async function withRetry<T>(
 
       const retryAfterSeconds = getRetryAfterSecondsFromError(error);
       if (status === 429 && retryAfterSeconds > MAX_RETRY_AFTER_SECONDS) {
-        throw new Error(
+        const rateLimitError = new Error(
           `Spotify rate limit er aktiv i ${retryAfterSeconds} sekunder. Stopper jobbet i stedet for at vente så længe.`,
-        );
+        ) as SpotifyRequestError;
+        rateLimitError.status = 429;
+        rateLimitError.retryAfterSeconds = retryAfterSeconds;
+        rateLimitError.url = getUrlFromError(error);
+        rateLimitError.spotifyRateLimitUntil = new Date(
+          Date.now() + retryAfterSeconds * 1000,
+        ).toISOString();
+        throw rateLimitError;
       }
 
       const exponentialBackoffMs = 750 * 2 ** (attempt - 1);
@@ -240,6 +515,40 @@ function getRetryAfterSecondsFromError(error: unknown) {
   return 0;
 }
 
+function getUrlFromError(error: unknown) {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "url" in error &&
+    typeof (error as { url?: unknown }).url === "string"
+  ) {
+    return (error as { url: string }).url;
+  }
+
+  return undefined;
+}
+
+export function getSpotifyCooldownFromError(error: unknown) {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "status" in error &&
+    (error as { status?: unknown }).status === 429 &&
+    "retryAfterSeconds" in error &&
+    typeof (error as { retryAfterSeconds?: unknown }).retryAfterSeconds === "number" &&
+    "spotifyRateLimitUntil" in error &&
+    typeof (error as { spotifyRateLimitUntil?: unknown }).spotifyRateLimitUntil === "string"
+  ) {
+    return {
+      retryAfterSeconds: (error as SpotifyRequestError).retryAfterSeconds ?? 0,
+      until: (error as SpotifyRequestError).spotifyRateLimitUntil ?? "",
+      message: error instanceof Error ? error.message : "Spotify rate limit",
+    };
+  }
+
+  return null;
+}
+
 function formatSpotifyErrorMessage(status: number, url: string, retryAfterSeconds: number) {
   if (status === 429 && retryAfterSeconds > 0) {
     return `Spotify API request failed: ${status} (${url}) retry-after=${retryAfterSeconds}s`;
@@ -275,7 +584,7 @@ async function fetchWithTimeout(input: string, init: RequestInit) {
     ) {
       const timeoutError = new Error(
         `Spotify request timed out after ${SPOTIFY_FETCH_TIMEOUT_MS}ms (${input})`,
-      ) as Error & { status?: number; retryAfterSeconds?: number; url?: string };
+      ) as SpotifyRequestError;
       timeoutError.status = 504;
       timeoutError.retryAfterSeconds = 0;
       timeoutError.url = input;
@@ -283,6 +592,15 @@ async function fetchWithTimeout(input: string, init: RequestInit) {
     }
 
     throw error;
+  }
+}
+
+async function readSpotifyErrorDetails(response: Response) {
+  try {
+    const text = await response.text();
+    return text ? `(${text})` : "";
+  } catch {
+    return "";
   }
 }
 
@@ -318,136 +636,4 @@ async function waitForSpotifyRequestWindow(context?: SpotifyExecutionContext) {
 
   nextSpotifyRequestAt = Date.now() + SPOTIFY_MIN_REQUEST_INTERVAL_MS;
   releaseQueue();
-}
-
-export async function fetchOwnPublicPlaylists(context?: SpotifyExecutionContext) {
-  const accessToken = await getAccessToken();
-  const explicitPlaylistIds = parsePlaylistIdsFromEnv();
-
-  if (explicitPlaylistIds.length > 0) {
-    const playlists = await fetchPlaylistsByIds(explicitPlaylistIds, accessToken, context);
-    return { accessToken, playlists };
-  }
-
-  if (!getEnv().SPOTIFY_USER_ID) {
-    throw new Error(
-      "Set either SPOTIFY_PLAYLIST_IDS or SPOTIFY_USER_ID in environment variables.",
-    );
-  }
-
-  const playlistMap = new Map<string, PlaylistSummary>();
-  let url: string | null =
-    `https://api.spotify.com/v1/users/${encodeURIComponent(getEnv().SPOTIFY_USER_ID)}/playlists` +
-    "?limit=50&fields=items(id,name,owner(id),public,snapshot_id,tracks(total)),next";
-
-  try {
-    while (url) {
-      const page: SpotifyPaging<PlaylistItem> = await spotifyGet(url, accessToken, context);
-
-      for (const playlist of page.items) {
-        if (playlist.owner.id === getEnv().SPOTIFY_USER_ID && playlist.public === true) {
-          playlistMap.set(playlist.id, {
-            id: playlist.id,
-            name: playlist.name,
-            snapshotId: playlist.snapshot_id ?? null,
-            trackTotal: playlist.tracks?.total ?? null,
-          });
-        }
-      }
-
-      url = page.next;
-    }
-  } catch (error) {
-    if (
-      typeof error === "object" &&
-      error !== null &&
-      "status" in error &&
-      (error as { status?: number }).status === 403
-    ) {
-      throw new Error(
-        "Spotify afviser playlist-opslag via SPOTIFY_USER_ID. Sæt SPOTIFY_PLAYLIST_IDS med en eller flere konkrete playlist IDs i stedet.",
-      );
-    }
-
-    throw error;
-  }
-
-  return { accessToken, playlists: [...playlistMap.values()] };
-}
-
-export async function fetchPlaylistsByIds(
-  playlistIds: string[],
-  accessToken?: string,
-  context?: SpotifyExecutionContext,
-) {
-  const token = accessToken ?? (await getAccessToken());
-  const playlists: PlaylistSummary[] = [];
-
-  for (const playlistId of playlistIds) {
-    const playlist = await spotifyGet<PlaylistItem>(
-      `https://api.spotify.com/v1/playlists/${encodeURIComponent(playlistId)}?fields=id,name,owner(id),public,snapshot_id,tracks(total)`,
-      token,
-      context,
-    );
-
-    playlists.push({
-      id: playlist.id,
-      name: playlist.name,
-      snapshotId: playlist.snapshot_id ?? null,
-      trackTotal: playlist.tracks?.total ?? null,
-    });
-  }
-
-  return playlists;
-}
-
-export async function fetchUnavailableTracksForPlaylist(
-  playlistId: string,
-  playlistName: string,
-  accessToken: string,
-  context?: SpotifyExecutionContext,
-): Promise<{ unavailable: TrackAvailability[]; checked: number }> {
-  let url: string | null =
-    `https://api.spotify.com/v1/playlists/${playlistId}/tracks` +
-    `?limit=100&market=${getEnv().SPOTIFY_MARKET}` +
-    "&fields=items(track(id,name,is_playable,restrictions(reason),external_urls(spotify),artists(name))),next";
-
-  const unavailable: TrackAvailability[] = [];
-  let checked = 0;
-
-  while (url) {
-    const page: SpotifyPaging<TrackEntry> = await spotifyGet(url, accessToken, context);
-
-    for (const item of page.items) {
-      await context?.onCheckpoint?.();
-
-      const track = item.track;
-      if (!track?.id) {
-        continue;
-      }
-
-      checked += 1;
-
-      const isUnavailableByPlayableFlag = track.is_playable === false;
-      const isUnavailableByRestriction = track.restrictions?.reason === "market";
-
-      if (!isUnavailableByPlayableFlag && !isUnavailableByRestriction) {
-        continue;
-      }
-
-      unavailable.push({
-        playlistId,
-        playlistName,
-        trackId: track.id,
-        trackName: track.name,
-        artists: track.artists.map((artist) => artist.name).join(", "),
-        trackUrl: track.external_urls?.spotify ?? null,
-        unavailableReason: track.restrictions?.reason ?? "not_playable",
-      });
-    }
-
-    url = page.next;
-  }
-
-  return { unavailable, checked };
 }

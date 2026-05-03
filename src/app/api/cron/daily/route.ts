@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { runDailyCheck } from "@/lib/checker";
+import { requestCheckRun } from "@/lib/checker";
 import { getEnv } from "@/lib/env";
 
 export async function GET(request: Request) {
@@ -8,6 +8,6 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const result = await runDailyCheck("cron");
-  return NextResponse.json(result);
+  const result = await requestCheckRun("cron");
+  return NextResponse.json(result, { status: result.accepted ? 202 : 409 });
 }

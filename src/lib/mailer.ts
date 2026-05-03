@@ -27,11 +27,11 @@ export async function sendUnavailableTracksAlert(
     listItems.push(`<h3>${escapeHtml(playlistName)}</h3><ul>`);
 
     for (const track of tracks) {
-      const trackText = `${track.trackName} - ${track.artists}`;
-      const line = track.trackUrl
-        ? `<li><a href="${track.trackUrl}">${escapeHtml(trackText)}</a></li>`
-        : `<li>${escapeHtml(trackText)}</li>`;
-      listItems.push(line);
+      const durationText = formatDuration(track.durationMs);
+      const trackText = durationText
+        ? `${track.trackName} (${durationText})`
+        : track.trackName;
+      listItems.push(`<li>${escapeHtml(trackText)}</li>`);
     }
 
     listItems.push("</ul>");
@@ -50,6 +50,17 @@ export async function sendUnavailableTracksAlert(
     subject: `[SpotifyCheck] ${newUnavailableTracks.length} nye utilgængelige tracks`,
     html,
   });
+}
+
+function formatDuration(durationMs: number | null) {
+  if (!durationMs || durationMs < 0) {
+    return null;
+  }
+
+  const totalSeconds = Math.floor(durationMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
 function escapeHtml(input: string) {

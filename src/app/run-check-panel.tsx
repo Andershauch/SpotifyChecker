@@ -3,13 +3,19 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
-type CheckResponse = {
-  status: "ok" | "error" | "skipped" | "cancelled";
-  checkedTracks: number;
-  unavailableCount: number;
-  newUnavailableCount: number;
-  checkedPlaylists: number;
-  skippedPlaylists: number;
+type CheckRequestResponse = {
+  accepted: boolean;
+  jobId: string | null;
+  status: "queued" | "already_running";
+  errorMessage: string | null;
+};
+
+type SmokeCheckResponse = {
+  status: "ok" | "error" | "skipped";
+  playlistId: string | null;
+  playlistName: string | null;
+  snapshotId: string | null;
+  source: "database" | null;
   errorMessage: string | null;
 };
 
@@ -33,6 +39,19 @@ type JobSnapshot = {
 
 type RunStatusResponse = {
   running: boolean;
+  spotifyConnection: {
+    connected: boolean;
+    spotifyUserId: string | null;
+    displayName: string | null;
+    connectedAt: string | null;
+    expiresAt: string | null;
+  };
+  cooldown: {
+    active: boolean;
+    until: string;
+    expiresInSeconds: number;
+    message: string;
+  } | null;
   lock: {
     ownerId: string;
     jobId: string | null;
@@ -46,55 +65,66 @@ type RunStatusResponse = {
 
 export function RunCheckPanel() {
   const router = useRouter();
-  const [secret, setSecret] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [queuedJobNotice, setQueuedJobNotice] = useState<{
+    jobId: string;
+    label: string;
+  } | null>(null);
   const [runStatus, setRunStatus] = useState<RunStatusResponse | null>(null);
   const [isRefreshingStatus, setIsRefreshingStatus] = useState(false);
+  const [isConnectingSpotify, setIsConnectingSpotify] = useState(false);
+  const [isDisconnectingSpotify, setIsDisconnectingSpotify] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
+  const [isStartingSample, setIsStartingSample] = useState(false);
+  const [isSmoking, setIsSmoking] = useState(false);
+  const [isResettingCheckpoints, setIsResettingCheckpoints] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [isUnlocking, setIsUnlocking] = useState(false);
 
   useEffect(() => {
-    if (!secret.trim()) {
-      return;
+    const searchParams = new URLSearchParams(window.location.search);
+    const spotifyStatus = searchParams.get("spotify");
+    const spotifyMessage = searchParams.get("message");
+
+    let nextMessage: string | null = null;
+
+    if (spotifyStatus === "connected") {
+      nextMessage = "Spotify er nu forbundet. Du kan hente status eller starte et check.";
+    } else if (spotifyStatus === "error" && spotifyMessage) {
+      nextMessage = spotifyMessage;
     }
 
+    if (spotifyStatus === "connected" || spotifyStatus === "error") {
+      if (nextMessage) {
+        window.setTimeout(() => {
+          setMessage(nextMessage);
+        }, 0);
+      }
+      router.replace("/");
+    }
+  }, [router]);
+
+  useEffect(() => {
     let cancelled = false;
 
     async function refreshStatus(showErrors: boolean) {
-      setIsRefreshingStatus(true);
+      const { response, payload } = await requestApi<RunStatusResponse>("/api/check/status");
 
-      try {
-        const response = await fetch("/api/check/status", {
-          headers: {
-            Authorization: `Bearer ${secret}`,
-          },
-        });
-
-        let payload: RunStatusResponse | { error?: string } | null = null;
-
-        try {
-          payload = (await response.json()) as RunStatusResponse | { error?: string };
-        } catch {
-          payload = null;
+      if (!response.ok) {
+        if (!cancelled && showErrors && response.status !== 401) {
+          setStatusMessage(getApiError(payload, response.status, "Kunne ikke hente status"));
         }
-
-        if (!response.ok) {
-          if (!cancelled && showErrors) {
-            setStatusMessage(getApiError(payload, response.status, "Kunne ikke hente status"));
-          }
-          return;
-        }
-
-        if (!cancelled) {
-          setRunStatus(payload as RunStatusResponse);
+        if (!cancelled && response.status === 401) {
+          setRunStatus(null);
           setStatusMessage(null);
         }
-      } finally {
-        if (!cancelled) {
-          setIsRefreshingStatus(false);
-        }
+        return;
+      }
+
+      if (!cancelled) {
+        setRunStatus(payload as RunStatusResponse);
+        setStatusMessage(null);
       }
     }
 
@@ -108,34 +138,95 @@ export function RunCheckPanel() {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [secret]);
+  }, []);
 
   const activeJob = runStatus?.running ? runStatus.job : runStatus?.latestJob ?? null;
   const isRunning = runStatus?.running ?? false;
+  const activeCooldown = runStatus?.cooldown?.active ? runStatus.cooldown : null;
+  const spotifyConnection = runStatus?.spotifyConnection ?? null;
+  const currentJobId = runStatus?.job?.id ?? runStatus?.latestJob?.id ?? null;
+  const panelState = getPanelState({
+    spotifyConnected: Boolean(spotifyConnection?.connected),
+    isRunning,
+    hasCooldown: Boolean(activeCooldown),
+  });
+  const queuedJobMatchesCurrent = Boolean(
+    queuedJobNotice && currentJobId && currentJobId === queuedJobNotice.jobId,
+  );
+  const queuedJobStatusMessage =
+    queuedJobMatchesCurrent && activeJob?.status === "running"
+      ? `${queuedJobNotice?.label} kører nu.`
+      : null;
+  const primaryStats = activeJob
+    ? [
+        {
+          label: "Tracks tjekket",
+          value: String(activeJob.checkedTracks),
+          tone: "hero" as const,
+        },
+        {
+          label: "Utilgængelige fundet",
+          value: String(activeJob.unavailableCount),
+          tone: activeJob.unavailableCount > 0 ? ("danger" as const) : ("hero" as const),
+        },
+        {
+          label: "Playlister tjekket",
+          value: String(activeJob.checkedPlaylists),
+          tone: "hero" as const,
+        },
+        {
+          label: "Jobstatus",
+          value: formatJobStatus(activeJob.status),
+          tone: "default" as const,
+        },
+        {
+          label: "Playlister sprunget over",
+          value: String(activeJob.skippedPlaylists),
+          tone: "default" as const,
+        },
+        {
+          label: "Trigger",
+          value: activeJob.triggerSource === "cron" ? "Cron" : "Manuel",
+          tone: "default" as const,
+        },
+      ]
+    : [];
+  const timingStats = activeJob
+    ? [
+        {
+          label: "Startet",
+          value: activeJob.startedAt ? formatDateTime(activeJob.startedAt) : "-",
+        },
+        {
+          label: "Sidste heartbeat",
+          value: activeJob.heartbeatAt ? formatDateTime(activeJob.heartbeatAt) : "-",
+        },
+        { label: "Stop ønsket", value: activeJob.cancelRequested ? "Ja" : "Nej" },
+      ]
+    : [];
+  const recoveryOpen = isRunning || Boolean(activeCooldown);
+  const latestRateLimitEvent =
+    !activeCooldown &&
+    activeJob?.status === "error" &&
+    activeJob.errorMessage?.includes("Spotify rate limit")
+      ? {
+          message: activeJob.errorMessage,
+          at: activeJob.heartbeatAt ?? activeJob.startedAt ?? activeJob.requestedAt,
+        }
+      : null;
 
   async function refreshStatusNow() {
-    if (!secret.trim()) {
-      return;
-    }
-
     setIsRefreshingStatus(true);
 
     try {
-      const response = await fetch("/api/check/status", {
-        headers: {
-          Authorization: `Bearer ${secret}`,
-        },
-      });
-
-      let payload: RunStatusResponse | { error?: string } | null = null;
-
-      try {
-        payload = (await response.json()) as RunStatusResponse | { error?: string };
-      } catch {
-        payload = null;
-      }
+      const { response, payload } = await requestApi<RunStatusResponse>("/api/check/status");
 
       if (!response.ok) {
+        if (response.status === 401) {
+          setRunStatus(null);
+          setStatusMessage(null);
+          return;
+        }
         setStatusMessage(getApiError(payload, response.status, "Kunne ikke hente status"));
         return;
       }
@@ -153,32 +244,100 @@ export function RunCheckPanel() {
     setIsStarting(true);
 
     try {
-      const response = await fetch("/api/check", {
+      const { response, payload } = await requestApi<CheckRequestResponse>("/api/check", {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${secret}`,
-        },
       });
-
-      let payload: CheckResponse | { error?: string } | null = null;
-
-      try {
-        payload = (await response.json()) as CheckResponse | { error?: string };
-      } catch {
-        payload = null;
-      }
 
       if (!response.ok) {
         setMessage(getApiError(payload, response.status, "Kørslen fejlede"));
         return;
       }
 
-      const result = payload as CheckResponse;
-      setMessage(getSummaryMessage(result));
+      const result = payload as CheckRequestResponse;
+      setMessage(getQueueSummaryMessage(result));
+      if (result.accepted && result.jobId) {
+        setQueuedJobNotice({ jobId: result.jobId, label: "Check" });
+      }
       await refreshStatusNow();
       router.refresh();
     } finally {
       setIsStarting(false);
+    }
+  }
+
+  async function handleConnectSpotify() {
+    setMessage(null);
+    setIsConnectingSpotify(true);
+
+    try {
+      const { response, payload } = await requestApi<{ url?: string }>("/api/spotify/connect", {
+        method: "POST",
+      });
+
+      if (!response.ok || !payload || !("url" in payload) || !payload.url) {
+        setMessage(getApiError(payload, response.status, "Kunne ikke starte Spotify-login"));
+        return;
+      }
+
+      window.location.href = payload.url;
+    } finally {
+      setIsConnectingSpotify(false);
+    }
+  }
+
+  async function handleDisconnectSpotify() {
+    setMessage(null);
+    setIsDisconnectingSpotify(true);
+
+    try {
+      const { response, payload } = await requestApi<{ disconnected?: boolean }>(
+        "/api/spotify/disconnect",
+        {
+          method: "POST",
+        },
+      );
+
+      if (!response.ok) {
+        setMessage(getApiError(payload, response.status, "Kunne ikke afbryde Spotify"));
+        return;
+      }
+
+      setMessage("Spotify-forbindelsen er afbrudt.");
+      await refreshStatusNow();
+    } finally {
+      setIsDisconnectingSpotify(false);
+    }
+  }
+
+  async function handleResetCheckpoints() {
+    setMessage(null);
+    setIsResettingCheckpoints(true);
+
+    try {
+      const { response, payload } = await requestApi<{ deletedCount?: number }>(
+        "/api/check/reset-checkpoints",
+        {
+          method: "POST",
+        },
+      );
+
+      if (!response.ok) {
+        setMessage(getApiError(payload, response.status, "Kunne ikke nulstille checkpoints"));
+        return;
+      }
+
+      const deletedCount =
+        payload && "deletedCount" in payload && typeof payload.deletedCount === "number"
+          ? payload.deletedCount
+          : 0;
+
+      setMessage(
+        `Checkpoints nulstillet. ${deletedCount} playlist-checkpoints blev fjernet, så næste check laver et fuldt scan.`,
+      );
+      await refreshStatusNow();
+      router.refresh();
+    } finally {
+      setIsResettingCheckpoints(false);
     }
   }
 
@@ -187,28 +346,22 @@ export function RunCheckPanel() {
     setIsCancelling(true);
 
     try {
-      const response = await fetch("/api/check/cancel", {
+      const { response, payload } = await requestApi<{ requested?: boolean }>("/api/check/cancel", {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${secret}`,
-        },
       });
-
-      let payload: { requested?: boolean; error?: string } | null = null;
-
-      try {
-        payload = (await response.json()) as { requested?: boolean; error?: string };
-      } catch {
-        payload = null;
-      }
 
       if (!response.ok) {
         setMessage(getApiError(payload, response.status, "Kunne ikke sende stop-signal"));
         return;
       }
 
+      const requested =
+        payload && "requested" in payload && typeof payload.requested === "boolean"
+          ? payload.requested
+          : false;
+
       setMessage(
-        payload?.requested
+        requested
           ? "Stop er anmodet. Den aktive kørsel stopper ved næste sikre checkpoint."
           : "Der er ingen aktiv kørsel at stoppe.",
       );
@@ -218,33 +371,48 @@ export function RunCheckPanel() {
     }
   }
 
+  async function handleSmokeTest() {
+    setMessage(null);
+    setIsSmoking(true);
+
+    try {
+      const { response, payload } = await requestApi<SmokeCheckResponse>("/api/check/smoke", {
+        method: "POST",
+      });
+
+      if (!response.ok) {
+        setMessage(getApiError(payload, response.status, "Smoke test fejlede"));
+        return;
+      }
+
+      setMessage(getSmokeSummaryMessage(payload as SmokeCheckResponse));
+      await refreshStatusNow();
+    } finally {
+      setIsSmoking(false);
+    }
+  }
+
   async function handleUnlock() {
     setMessage(null);
     setIsUnlocking(true);
 
     try {
-      const response = await fetch("/api/check/unlock", {
+      const { response, payload } = await requestApi<{ released?: boolean }>("/api/check/unlock", {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${secret}`,
-        },
       });
-
-      let payload: { released?: boolean; error?: string } | null = null;
-
-      try {
-        payload = (await response.json()) as { released?: boolean; error?: string };
-      } catch {
-        payload = null;
-      }
 
       if (!response.ok) {
         setMessage(getApiError(payload, response.status, "Kunne ikke frigive låsen"));
         return;
       }
 
+      const released =
+        payload && "released" in payload && typeof payload.released === "boolean"
+          ? payload.released
+          : false;
+
       setMessage(
-        payload?.released
+        released
           ? "Låsen er frigivet manuelt. Brug kun dette, hvis et job er fastlåst."
           : "Der var ingen aktiv lås at frigive.",
       );
@@ -255,198 +423,517 @@ export function RunCheckPanel() {
     }
   }
 
+  async function handleSampleStart() {
+    setMessage(null);
+    setIsStartingSample(true);
+
+    try {
+      const { response, payload } = await requestApi<CheckRequestResponse>("/api/check/sample", {
+        method: "POST",
+      });
+
+      if (!response.ok) {
+        setMessage(getApiError(payload, response.status, "Testscan fejlede"));
+        return;
+      }
+
+      const result = payload as CheckRequestResponse;
+      setMessage(getQueueSummaryMessage(result, "Testscan af de første 5 playlister"));
+      if (result.accepted && result.jobId) {
+        setQueuedJobNotice({
+          jobId: result.jobId,
+          label: "Testscan af de første 5 playlister",
+        });
+      }
+      await refreshStatusNow();
+      router.refresh();
+    } finally {
+      setIsStartingSample(false);
+    }
+  }
+
   return (
-    <section className="card">
-      <h2>Kontrolpanel</h2>
-      <p>
-        Start et check, se live progress og stop en aktiv kørsel uden at skulle
-        vente på en lang timeout.
-      </p>
+    <section className="card control-shell">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">Kontrolcenter</p>
+          <h2>Drift, test og recovery</h2>
+        </div>
+        <p className="section-note">Alle handlinger her er designet til at være så skånsomme mod Spotify som muligt.</p>
+      </div>
 
       <form className="run-form" onSubmit={handleStart}>
-        <label className="field">
-          <span>CRON_SECRET</span>
-          <input
-            type="password"
-            value={secret}
-            onChange={(event) => {
-              const nextValue = event.target.value;
-              setSecret(nextValue);
-
-              if (!nextValue.trim()) {
-                setRunStatus(null);
-                setStatusMessage(null);
-                setMessage(null);
+        <div className="ops-toolbar">
+          <div className="toolbar-strip">
+            <span
+              className={
+                spotifyConnection?.connected ? "pill pill-running" : "pill pill-idle"
               }
-            }}
-            placeholder="Indsæt secret"
-            autoComplete="current-password"
-            required
-          />
-        </label>
-
-        <div className="control-grid">
-          <div className="status-box">
-            <div className="status-line">
-              <span className={isRunning ? "pill pill-running" : "pill pill-idle"}>
-                {isRunning ? "Aktivt job kører" : "Ingen aktiv kørsel"}
+            >
+              {spotifyConnection?.connected ? "Spotify forbundet" : "Spotify ikke forbundet"}
+            </span>
+            <span className={getRunPillClass(panelState)}>{getRunPillText(panelState)}</span>
+            {activeCooldown ? (
+              <span className="pill pill-warning">
+                Cooldown til {formatTime(activeCooldown.until)}
               </span>
+            ) : null}
+          </div>
+
+          <div className="toolbar-actions toolbar-actions-cluster">
+            <div className="toolbar-cluster">
+              <button
+                type="submit"
+                className="toolbar-primary"
+                disabled={
+                  !spotifyConnection?.connected ||
+                  isRunning ||
+                  isStarting ||
+                  Boolean(activeCooldown)
+                }
+              >
+                {isStarting
+                  ? "Starter..."
+                  : isRunning
+                    ? "Job kører allerede"
+                    : activeCooldown
+                      ? "Spotify cooldown aktiv"
+                      : "Start check"}
+              </button>
+
               <button
                 type="button"
                 className="secondary-button"
                 onClick={() => {
-                  void refreshStatusNow();
+                  void handleSmokeTest();
                 }}
-                disabled={!secret.trim() || isRefreshingStatus}
+                disabled={
+                  !spotifyConnection?.connected ||
+                  isRunning ||
+                  isSmoking ||
+                  isStartingSample ||
+                  Boolean(activeCooldown)
+                }
               >
-                {isRefreshingStatus ? "Opdaterer..." : "Opdater status"}
+                {isSmoking
+                  ? "Tester..."
+                  : activeCooldown
+                    ? "Spotify cooldown aktiv"
+                    : "Smoke test"}
+              </button>
+
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => {
+                  void handleSampleStart();
+                }}
+                disabled={
+                  !spotifyConnection?.connected ||
+                  isRunning ||
+                  isStartingSample ||
+                  Boolean(activeCooldown)
+                }
+              >
+                {isStartingSample
+                  ? "Starter testscan..."
+                  : activeCooldown
+                    ? "Spotify cooldown aktiv"
+                    : "Testscan: 5 playlister"}
               </button>
             </div>
 
-            {activeJob ? (
-              <div className="status-stack">
-                <dl className="live-stats">
-                  <div>
-                    <dt>Jobstatus</dt>
-                    <dd>{formatJobStatus(activeJob.status)}</dd>
-                  </div>
-                  <div>
-                    <dt>Trigger</dt>
-                    <dd>{activeJob.triggerSource === "cron" ? "Cron" : "Manuel"}</dd>
-                  </div>
-                  <div>
-                    <dt>Playlister tjekket</dt>
-                    <dd>{activeJob.checkedPlaylists}</dd>
-                  </div>
-                  <div>
-                    <dt>Playlister sprunget over</dt>
-                    <dd>{activeJob.skippedPlaylists}</dd>
-                  </div>
-                  <div>
-                    <dt>Tracks tjekket</dt>
-                    <dd>{activeJob.checkedTracks}</dd>
-                  </div>
-                  <div>
-                    <dt>Utilgængelige fundet</dt>
-                    <dd>{activeJob.unavailableCount}</dd>
-                  </div>
-                </dl>
+            <button
+              type="button"
+              className="secondary-button toolbar-utility"
+              onClick={() => {
+                void refreshStatusNow();
+              }}
+              disabled={isRefreshingStatus}
+            >
+              {isRefreshingStatus ? "Opdaterer..." : "Opdater"}
+            </button>
+          </div>
+        </div>
 
-                <dl className="live-stats">
-                  <div>
-                    <dt>Startet</dt>
-                    <dd>{activeJob.startedAt ? formatDateTime(activeJob.startedAt) : "-"}</dd>
-                  </div>
-                  <div>
-                    <dt>Sidste heartbeat</dt>
-                    <dd>{activeJob.heartbeatAt ? formatDateTime(activeJob.heartbeatAt) : "-"}</dd>
-                  </div>
-                  <div>
-                    <dt>Stop ønsket</dt>
-                    <dd>{activeJob.cancelRequested ? "Ja" : "Nej"}</dd>
-                  </div>
-                  <div>
-                    <dt>Aktuel playlist</dt>
-                    <dd>{activeJob.currentPlaylistName ?? "-"}</dd>
-                  </div>
-                  <div>
-                    <dt>Aktuel fase</dt>
-                    <dd>{activeJob.currentStage ?? "-"}</dd>
-                  </div>
-                </dl>
+        <div className="control-grid control-grid-rich">
+          <div className="operations-main">
+            <section className="status-box operations-card">
+              <div className="operations-header">
+                <div>
+                  <p className="eyebrow">Aktuel drift</p>
+                  <h3>Live-overblik</h3>
+                </div>
+                <p className="panel-summary">{getPanelSummary(panelState, activeCooldown)}</p>
+              </div>
 
-                {runStatus?.lock ? (
+              {activeCooldown ? (
+                <div className="run-message run-message-muted">
+                  <strong>Næste sikre forsøg</strong>
+                  <p>
+                    Vent til {formatDateTime(activeCooldown.until)} før du prøver igen. Panelet blokerer nu også smoke test under aktiv cooldown.
+                  </p>
+                </div>
+              ) : null}
+
+              <div className="metrics-board">
+                {primaryStats.length > 0 ? (
+                  primaryStats.map((stat) => (
+                    <article
+                      key={stat.label}
+                      className={`metric-tile ${
+                        stat.tone === "hero"
+                          ? "metric-tile-hero"
+                          : stat.tone === "danger"
+                            ? "metric-tile-danger"
+                            : ""
+                      }`}
+                    >
+                      <span>{stat.label}</span>
+                      <strong>{stat.value}</strong>
+                    </article>
+                  ))
+                ) : (
+                  <>
+                    <article className="metric-tile metric-tile-wide">
+                      <span>Status</span>
+                      <strong>Ingen kørsel endnu</strong>
+                    </article>
+                    <article className="metric-tile metric-tile-wide">
+                      <span>Næste skridt</span>
+                      <strong>
+                        {spotifyConnection?.connected ? "Kør smoke test eller start check" : "Forbind Spotify"}
+                      </strong>
+                    </article>
+                  </>
+                )}
+              </div>
+
+              <div className="spotlight-grid">
+                <article className="spotlight-card">
+                  <span className="spotlight-label">Aktuel playlist</span>
+                  <strong className="spotlight-title">
+                    {activeJob?.currentPlaylistName ?? "Ingen aktiv playlist"}
+                  </strong>
+                  <p className="spotlight-meta">
+                    {activeJob?.currentStage
+                      ? `Fase: ${activeJob.currentStage}`
+                      : "Panelet følger automatisk med, når et job er i gang."}
+                  </p>
+                </article>
+
+                <article className="spotlight-card">
+                  <span className="spotlight-label">Tid og lås</span>
+                  {timingStats.length > 0 ? (
+                    <dl className="spotlight-list">
+                      {timingStats.map((stat) => (
+                        <div key={stat.label}>
+                          <dt>{stat.label}</dt>
+                          <dd>{stat.value}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  ) : (
+                    <p>Ingen aktiv joblås. Næste check kan sættes i kø fra toolbaren.</p>
+                  )}
+
+                  {runStatus?.lock ? (
+                    <p className="helper-text">
+                      Låsen udløber om {formatSeconds(runStatus.lock.expiresInSeconds)}.
+                    </p>
+                  ) : null}
+                </article>
+              </div>
+
+              {queuedJobMatchesCurrent && activeJob?.status === "queued" ? (
+                <p className="helper-text">
+                  Seneste handling: {queuedJobNotice?.label} er sendt til kø og afventer næste statusopdatering.
+                </p>
+              ) : null}
+
+              {latestRateLimitEvent ? (
+                <div className="run-message run-message-muted">
+                  <strong>Seneste rate-limit-hændelse</strong>
+                  <p>
+                    {latestRateLimitEvent.message}
+                    {latestRateLimitEvent.at
+                      ? ` Jobbet sluttede ${formatDateTime(latestRateLimitEvent.at)}.`
+                      : ""}
+                  </p>
+                  <p>
+                    Der er ikke registreret en aktiv cooldown lige nu, så dette er historik og ikke en nuværende blokering.
+                  </p>
+                </div>
+              ) : null}
+
+              {statusMessage ? <p className="run-message">{statusMessage}</p> : null}
+              {activeJob?.errorMessage && !latestRateLimitEvent ? (
+                <p className="run-message">{activeJob.errorMessage}</p>
+              ) : null}
+            </section>
+          </div>
+
+          <aside className="operations-side">
+            <section className="status-box connection-card">
+              <div className="section-heading section-heading-compact">
+                <div>
+                  <p className="eyebrow">Spotify-session</p>
+                  <h3>Forbindelse</h3>
+                </div>
+              </div>
+
+              <p className="helper-text">
+                Appen bruger Spotify OAuth for én bruger og læser kun ejerens egne public playlister.
+              </p>
+
+              <dl className="session-stats">
+                <div>
+                  <dt>Bruger</dt>
+                  <dd>{spotifyConnection?.displayName ?? spotifyConnection?.spotifyUserId ?? "-"}</dd>
+                </div>
+                <div>
+                  <dt>Forbundet</dt>
+                  <dd>
+                    {spotifyConnection?.connectedAt
+                      ? formatDateTime(spotifyConnection.connectedAt)
+                      : "-"}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Token udløber</dt>
+                  <dd>
+                    {spotifyConnection?.expiresAt
+                      ? formatDateTime(spotifyConnection.expiresAt)
+                      : "-"}
+                  </dd>
+                </div>
+              </dl>
+
+              <div className="toolbar-actions toolbar-actions-stacked">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    void handleConnectSpotify();
+                  }}
+                  disabled={isConnectingSpotify || Boolean(spotifyConnection?.connected)}
+                >
+                  {isConnectingSpotify
+                    ? "Sender videre..."
+                    : spotifyConnection?.connected
+                      ? "Spotify er forbundet"
+                      : "Forbind Spotify"}
+                </button>
+
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    void handleDisconnectSpotify();
+                  }}
+                  disabled={!spotifyConnection?.connected || isDisconnectingSpotify}
+                >
+                  {isDisconnectingSpotify ? "Afbryder..." : "Afbryd Spotify"}
+                </button>
+              </div>
+            </section>
+
+            <details className="status-box recovery-drawer" open={recoveryOpen}>
+              <summary>
+                <span>
+                  <span className="eyebrow">Drift og recovery</span>
+                  <strong>Avancerede handlinger</strong>
+                </span>
+              </summary>
+
+              <div className="actions">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    void handleResetCheckpoints();
+                  }}
+                  disabled={isRunning || isResettingCheckpoints}
+                >
+                  {isResettingCheckpoints ? "Nulstiller..." : "Nulstil checkpoints"}
+                </button>
+
+                <button
+                  type="button"
+                  className="danger-button"
+                  onClick={() => {
+                    void handleCancel();
+                  }}
+                  disabled={!isRunning || isCancelling}
+                >
+                  {isCancelling ? "Stopper..." : "Stop job"}
+                </button>
+
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    void handleUnlock();
+                  }}
+                  disabled={!isRunning || isUnlocking}
+                >
+                  {isUnlocking ? "Frigiver..." : "Nød-frigiv lås"}
+                </button>
+              </div>
+
+              <div className="recovery-copy">
+                <p className="helper-text">
+                  “Stop job” sender et cancel-signal, som processen tjekker mellem Spotify-kald.
+                </p>
+                <p className="helper-text">
+                  “Nød-frigiv lås” er kun til fastlåste jobs, og “Nulstil checkpoints” tvinger et tungere track-scan næste gang.
+                </p>
+                {activeCooldown ? (
                   <p className="helper-text">
-                    Låsen udløber om {formatSeconds(runStatus.lock.expiresInSeconds)}.
+                    Spotify bad senest om pause indtil {formatDateTime(activeCooldown.until)}.
                   </p>
                 ) : null}
-
-                {activeJob.errorMessage ? (
-                  <p className="run-message">{activeJob.errorMessage}</p>
-                ) : null}
               </div>
-            ) : (
-              <p className="helper-text">
-                Indtast secret for at hente live-status. Panelet opdaterer automatisk
-                hvert 2. sekund, når der er kontakt.
-              </p>
-            )}
-
-            {statusMessage ? <p className="run-message">{statusMessage}</p> : null}
-          </div>
-
-          <div className="actions">
-            <button
-              type="submit"
-              disabled={!secret.trim() || isRunning || isStarting}
-            >
-              {isStarting ? "Starter..." : isRunning ? "Job kører allerede" : "Start check"}
-            </button>
-
-            <button
-              type="button"
-              className="danger-button"
-              onClick={() => {
-                void handleCancel();
-              }}
-              disabled={!secret.trim() || !isRunning || isCancelling}
-            >
-              {isCancelling ? "Stopper..." : "Stop job"}
-            </button>
-
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={() => {
-                void handleUnlock();
-              }}
-              disabled={!secret.trim() || !isRunning || isUnlocking}
-            >
-              {isUnlocking ? "Frigiver..." : "Nød-frigiv lås"}
-            </button>
-
-            <p className="helper-text">
-              “Stop job” sender et cancel-signal, som processen tjekker mellem
-              Spotify-kald. “Nød-frigiv lås” er kun til fastlåste jobs.
-            </p>
-          </div>
+            </details>
+          </aside>
         </div>
       </form>
 
-      {message ? <p className="run-message">{message}</p> : null}
+      {queuedJobStatusMessage ? (
+        <p className="run-message">{queuedJobStatusMessage}</p>
+      ) : message ? (
+        <p className="run-message">{message}</p>
+      ) : null}
     </section>
   );
 }
 
-function getApiError(
-  payload: { error?: string } | RunStatusResponse | CheckResponse | null,
-  status: number,
-  fallback: string,
-) {
-  return payload && "error" in payload && payload.error
-    ? payload.error
-    : `${fallback} (${status}).`;
-}
-
-function getSummaryMessage(result: CheckResponse) {
-  if (result.status === "ok") {
-    return `Check færdigt: ${result.checkedPlaylists} playlister tjekket, ${result.skippedPlaylists} sprunget over og ${result.checkedTracks} tracks gennemgået.`;
+function getApiError(payload: unknown, status: number, fallback: string) {
+  if (
+    typeof payload === "object" &&
+    payload !== null &&
+    "error" in payload &&
+    typeof (payload as { error?: unknown }).error === "string"
+  ) {
+    return (payload as { error: string }).error;
   }
 
-  if (result.status === "cancelled") {
-    return result.errorMessage ?? "Kørslen blev stoppet manuelt.";
+  return `${fallback} (${status}).`;
+}
+
+async function requestApi<T>(input: string, init?: RequestInit) {
+  const response = await fetch(input, init);
+  let payload: T | { error?: string } | null = null;
+
+  try {
+    payload = (await response.json()) as T | { error?: string };
+  } catch {
+    payload = null;
+  }
+
+  return { response, payload };
+}
+
+function getQueueSummaryMessage(
+  result: CheckRequestResponse,
+  label = "Check",
+) {
+  if (result.status === "queued") {
+    return result.jobId
+      ? `${label} sat i kø som job ${result.jobId}. Panelet opdaterer status automatisk.`
+      : `${label} sat i kø. Panelet opdaterer status automatisk.`;
+  }
+
+  return result.errorMessage ?? "Et andet check kører allerede.";
+}
+
+function getPanelState(input: {
+  spotifyConnected: boolean;
+  isRunning: boolean;
+  hasCooldown: boolean;
+}) {
+  if (!input.spotifyConnected) {
+    return "disconnected" as const;
+  }
+
+  if (input.hasCooldown) {
+    return "cooldown" as const;
+  }
+
+  if (input.isRunning) {
+    return "running" as const;
+  }
+
+  return "ready" as const;
+}
+
+function getPanelSummary(
+  panelState: ReturnType<typeof getPanelState>,
+  cooldown: RunStatusResponse["cooldown"],
+) {
+  switch (panelState) {
+    case "disconnected":
+      return "Forbind Spotify først. Når sessionen er aktiv, kan du bruge smoke test eller starte et check.";
+    case "cooldown":
+      return cooldown
+        ? `Spotify bad om pause indtil ${formatDateTime(cooldown.until)}. Brug ventetiden på smoke test eller UI-kontrol.`
+        : "Spotify cooldown er aktiv.";
+    case "running":
+      return "Et job kører nu. Panelet opdaterer status automatisk, så du kan følge playlist og fase live.";
+    case "ready":
+      return "Panelet er klar. Brug smoke test til et billigt helbredstjek eller testscan for at validere track-parsing på få playlister.";
+  }
+}
+
+function getRunPillClass(panelState: ReturnType<typeof getPanelState>) {
+  switch (panelState) {
+    case "running":
+      return "pill pill-running";
+    case "cooldown":
+      return "pill pill-warning";
+    case "ready":
+      return "pill pill-ready";
+    case "disconnected":
+    default:
+      return "pill pill-idle";
+  }
+}
+
+function getRunPillText(panelState: ReturnType<typeof getPanelState>) {
+  switch (panelState) {
+    case "running":
+      return "Aktivt job kører";
+    case "cooldown":
+      return "Spotify cooldown aktiv";
+    case "ready":
+      return "Klar til ny kørsel";
+    case "disconnected":
+    default:
+      return "Ingen aktiv kørsel";
+  }
+}
+
+function getSmokeSummaryMessage(result: SmokeCheckResponse) {
+  if (result.status === "ok") {
+    return `Smoke test OK: playlisten "${result.playlistName ?? result.playlistId}" svarede fra database-kataloget${result.snapshotId ? ` med snapshot ${result.snapshotId}` : ""}.`;
   }
 
   if (result.status === "skipped") {
-    return result.errorMessage ?? "Kørslen blev sprunget over.";
+    return result.errorMessage ?? "Smoke testen blev sprunget over.";
   }
 
-  return result.errorMessage ?? "Spotify-check fejlede.";
+  return result.errorMessage ?? "Spotify smoke test fejlede.";
 }
 
 function formatDateTime(value: string) {
   return new Intl.DateTimeFormat("da-DK", {
     dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
+}
+
+function formatTime(value: string) {
+  return new Intl.DateTimeFormat("da-DK", {
     timeStyle: "short",
   }).format(new Date(value));
 }
