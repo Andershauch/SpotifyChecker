@@ -36,7 +36,8 @@ const CHECKPOINT_FLUSH_BATCH_SIZE = 25;
 const DEFAULT_PLAYLIST_SCAN_BUDGET = 25;
 const STALE_RECHECK_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 const UNAVAILABLE_RECHECK_INTERVAL_MS = 2 * 24 * 60 * 60 * 1000;
-const activeJobProcessors = new Set<string>();
+
+export type CheckTriggerSource = "manual" | "cron";
 
 export type CheckSummary = {
   status: "ok" | "error" | "skipped" | "cancelled";
@@ -56,7 +57,7 @@ export type CheckRequestSummary = {
   errorMessage: string | null;
 };
 
-type CheckRunOptions = {
+export type CheckRunOptions = {
   playlistLimit?: number;
   ignoreCheckpoints?: boolean;
   scanBudget?: number;
@@ -143,16 +144,15 @@ class CancelledCheckError extends Error {
 }
 
 export async function runDailyCheck(
-  triggerSource: "manual" | "cron" = "manual",
+  triggerSource: CheckTriggerSource = "manual",
 ): Promise<CheckSummary> {
   await ensureSchema();
   const job = await createCheckJob(triggerSource);
-  return runCheckJob(job.id);
+  return executeCheckJob(job.id);
 }
 
 export async function requestCheckRun(
-  triggerSource: "manual" | "cron" = "manual",
-  options?: CheckRunOptions,
+  triggerSource: CheckTriggerSource = "manual",
 ): Promise<CheckRequestSummary> {
   await ensureSchema();
   const currentLock = await getCheckRunLock(CHECK_RUN_LOCK_NAME);
@@ -167,7 +167,6 @@ export async function requestCheckRun(
   }
 
   const job = await createCheckJob(triggerSource);
-  startCheckJobProcessor(job.id, triggerSource, options);
 
   return {
     accepted: true,
@@ -177,7 +176,7 @@ export async function requestCheckRun(
   };
 }
 
-async function runCheckJob(
+export async function executeCheckJob(
   jobId: string,
   options?: CheckRunOptions,
 ): Promise<CheckSummary> {
@@ -232,7 +231,7 @@ async function runCheckJob(
     status: "running",
     started: true,
     heartbeat: true,
-    payload: { currentPlaylistName: null, currentStage: "Forbereder check" },
+      payload: { currentPlaylistName: null, currentStage: "Forbereder check" },
   });
 
   let checkedTracks = 0;
@@ -604,32 +603,6 @@ async function runCheckJob(
   } finally {
     await releaseCheckRunLock(CHECK_RUN_LOCK_NAME, lockOwnerId);
   }
-}
-
-function startCheckJobProcessor(
-  jobId: string,
-  triggerSource: "manual" | "cron",
-  options?: CheckRunOptions,
-) {
-  if (activeJobProcessors.has(jobId)) {
-    return;
-  }
-
-  activeJobProcessors.add(jobId);
-
-  setTimeout(() => {
-    void runCheckJob(jobId, options)
-      .catch((error) => {
-        console.error("[SpotifyCheck] Background check job crashed", {
-          jobId,
-          triggerSource,
-          error,
-        });
-      })
-      .finally(() => {
-        activeJobProcessors.delete(jobId);
-      });
-  }, 0);
 }
 
 export async function runSpotifySmokeCheck(): Promise<SmokeCheckSummary> {

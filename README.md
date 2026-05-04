@@ -6,6 +6,7 @@ Se også:
 
 - den praktiske brugermanual i [docs/USER_GUIDE.md](/home/devops/projects/SpotifyCheck/docs/USER_GUIDE.md)
 - den udviklerrettede arkitekturdoc i [docs/ARCHITECTURE.md](/home/devops/projects/SpotifyCheck/docs/ARCHITECTURE.md)
+- workflow-migrationsplanen i [docs/WORKFLOW_MIGRATION_PLAN.md](/home/devops/projects/SpotifyCheck/docs/WORKFLOW_MIGRATION_PLAN.md)
 
 ## Stack
 
