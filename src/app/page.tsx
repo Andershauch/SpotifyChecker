@@ -1,4 +1,4 @@
-import { getLatestRun } from "@/lib/checker";
+import { getLatestJobSnapshot, getLatestRun } from "@/lib/checker";
 import { RunCheckPanel } from "@/app/run-check-panel";
 
 function formatDate(dateString: string) {
@@ -9,7 +9,7 @@ function formatDate(dateString: string) {
 }
 
 export default async function Home() {
-  const latestRun = await getLatestRun();
+  const [latestRun, latestJob] = await Promise.all([getLatestRun(), getLatestJobSnapshot()]);
   const latestStatusLabel = latestRun
     ? latestRun.status === "ok"
       ? "OK"
@@ -60,6 +60,17 @@ export default async function Home() {
           ) : null}
         </div>
 
+        {latestJob ? (
+          <p className="section-note">
+            Seneste jobtype:{" "}
+            <strong>{latestJob.triggerSource === "cron" ? "Cron" : "Manuel"}</strong>
+            {latestJob.requestedAt ? `, startet ${formatDate(latestJob.requestedAt)}.` : "."}
+            {latestJob.triggerSource === "manual"
+              ? " Dette felt afspejler derfor muligvis en operatørtest og ikke sidste planlagte cron-kørsel."
+              : " Dette afspejler den seneste planlagte driftskørsel."}
+          </p>
+        ) : null}
+
         {latestRun ? (
           <dl className="stats stats-compact">
             <div>
@@ -82,6 +93,12 @@ export default async function Home() {
               <dt>Utilgængelige tracks</dt>
               <dd>{latestRun.unavailable_count}</dd>
             </div>
+            {latestJob ? (
+              <div>
+                <dt>Trigger</dt>
+                <dd>{latestJob.triggerSource === "cron" ? "Cron" : "Manuel"}</dd>
+              </div>
+            ) : null}
             {latestRun.error_message ? (
               <div>
                 <dt>Fejl</dt>
