@@ -119,6 +119,24 @@ export async function ensureSchema() {
     `;
 
     await sql`
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'unavailable_tracks'
+            AND column_name = 'artists'
+            AND is_nullable = 'NO'
+        ) THEN
+          ALTER TABLE unavailable_tracks
+          ALTER COLUMN artists DROP NOT NULL;
+        END IF;
+      END
+      $$;
+    `;
+
+    await sql`
       CREATE TABLE IF NOT EXISTS check_run_lock (
         lock_name TEXT PRIMARY KEY,
         owner_id TEXT NOT NULL,
