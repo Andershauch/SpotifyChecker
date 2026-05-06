@@ -344,37 +344,45 @@ export async function searchTrackOnSpotify(input: {
   trackName: string;
   artistName?: string | null;
   durationMs?: number | null;
+  excludeTrackId?: string | null;
+  requireExactTitle?: boolean;
+  allowVersionTitleMatch?: boolean;
+  maxDurationDifferenceMs?: number | null;
+  limit?: number;
+  useBroadFallback?: boolean;
   context?: SpotifyExecutionContext;
 }): Promise<SpotifyTrackSearchMatch | null> {
   const accessToken = await getAccessToken();
-  const queryParts = [`track:${input.trackName}`];
-  if (input.artistName) {
-    queryParts.push(`artist:${input.artistName}`);
+  const limit = Math.min(Math.max(input.limit ?? 5, 1), 10);
+  const queries = buildTrackSearchQueries(input);
+
+  for (const query of queries) {
+    const url =
+      `https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}` +
+      `&type=track&limit=${limit}&market=${getEnv().SPOTIFY_MARKET}`;
+
+    const response = await spotifyGet<SpotifySearchResponse>(url, accessToken, input.context);
+    const items = (response.tracks?.items ?? []).filter((item) => isAcceptableTrackSearchMatch(item, input));
+    if (items.length === 0) {
+      continue;
+    }
+
+    const best = [...items].sort((left, right) => {
+      const leftScore = getSearchMatchScore(left, input);
+      const rightScore = getSearchMatchScore(right, input);
+      return rightScore - leftScore;
+    })[0];
+
+    return {
+      trackId: best.id,
+      trackName: best.name,
+      artistName: best.artists?.[0]?.name?.trim() ?? null,
+      spotifyUrl: best.external_urls?.spotify ?? null,
+      durationMs: typeof best.duration_ms === "number" ? best.duration_ms : null,
+    };
   }
 
-  const url =
-    `https://api.spotify.com/v1/search?q=${encodeURIComponent(queryParts.join(" "))}` +
-    `&type=track&limit=5&market=${getEnv().SPOTIFY_MARKET}`;
-
-  const response = await spotifyGet<SpotifySearchResponse>(url, accessToken, input.context);
-  const items = response.tracks?.items ?? [];
-  if (items.length === 0) {
-    return null;
-  }
-
-  const best = [...items].sort((left, right) => {
-    const leftScore = getSearchMatchScore(left, input);
-    const rightScore = getSearchMatchScore(right, input);
-    return rightScore - leftScore;
-  })[0];
-
-  return {
-    trackId: best.id,
-    trackName: best.name,
-    artistName: best.artists?.[0]?.name?.trim() ?? null,
-    spotifyUrl: best.external_urls?.spotify ?? null,
-    durationMs: typeof best.duration_ms === "number" ? best.duration_ms : null,
-  };
+  return null;
 }
 
 async function getRequiredSpotifySession() {
@@ -696,6 +704,115 @@ function getSearchMatchScore(
   }
 
   return score;
+}
+
+function buildTrackSearchQueries(input: {
+  trackName: string;
+  artistName?: string | null;
+  useBroadFallback?: boolean;
+  allowVersionTitleMatch?: boolean;
+}) {
+  const fieldQueryParts = [`track:${input.trackName}`];
+  if (input.artistName) {
+    fieldQueryParts.push(`artist:${input.artistName}`);
+  }
+
+  const queries = [fieldQueryParts.join(" ")];
+  if (input.useBroadFallback) {
+    const plainQueryParts = [input.trackName, input.artistName].filter(Boolean);
+    queries.push(plainQueryParts.join(" "));
+    queries.push(input.trackName);
+
+    if (input.allowVersionTitleMatch) {
+      const baseTrackName = getBaseTrackTitle(normalizeSearchText(input.trackName));
+      if (baseTrackName && baseTrackName !== normalizeSearchText(input.trackName)) {
+        const baseFieldQueryParts = [`track:${baseTrackName}`];
+        if (input.artistName) {
+          baseFieldQueryParts.push(`artist:${input.artistName}`);
+        }
+
+        const basePlainQueryParts = [baseTrackName, input.artistName].filter(Boolean);
+        queries.push(baseFieldQueryParts.join(" "));
+        queries.push(basePlainQueryParts.join(" "));
+        queries.push(baseTrackName);
+      }
+    }
+  }
+
+  return [...new Set(queries.filter((query) => query.trim().length > 0))];
+}
+
+function isAcceptableTrackSearchMatch(
+  item: {
+    id: string;
+    name: string;
+    duration_ms?: number;
+  },
+  input: {
+    trackName: string;
+    durationMs?: number | null;
+    excludeTrackId?: string | null;
+    requireExactTitle?: boolean;
+    allowVersionTitleMatch?: boolean;
+    maxDurationDifferenceMs?: number | null;
+  },
+) {
+  if (input.excludeTrackId && item.id === input.excludeTrackId) {
+    return false;
+  }
+
+  if (
+    input.requireExactTitle &&
+    !isMatchingTrackTitle(item.name, input.trackName, Boolean(input.allowVersionTitleMatch))
+  ) {
+    return false;
+  }
+
+  if (
+    typeof input.maxDurationDifferenceMs === "number" &&
+    typeof input.durationMs === "number" &&
+    typeof item.duration_ms === "number" &&
+    Math.abs(item.duration_ms - input.durationMs) > input.maxDurationDifferenceMs
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function isMatchingTrackTitle(candidateTitle: string, requestedTitle: string, allowVersionMatch: boolean) {
+  const normalizedCandidate = normalizeSearchText(candidateTitle);
+  const normalizedRequested = normalizeSearchText(requestedTitle);
+  if (normalizedCandidate === normalizedRequested) {
+    return true;
+  }
+
+  if (!allowVersionMatch) {
+    return false;
+  }
+
+  return getBaseTrackTitle(normalizedCandidate) === getBaseTrackTitle(normalizedRequested);
+}
+
+function getBaseTrackTitle(normalizedTitle: string) {
+  return normalizedTitle
+    .replace(/\b(19|20)\d{2}\b/g, " ")
+    .replace(
+      /\b(digital|remaster|remastered|remix|mix|version|edit|radio|single|album|original|mono|stereo|deluxe|expanded|anniversary|edition|explicit|clean)\b/g,
+      " ",
+    )
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function normalizeSearchText(value: string) {
+  return value
+    .normalize("NFKD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim()
+    .replace(/\s+/g, " ");
 }
 
 function formatRetryLogSuffix(error: unknown, retryAfterSeconds: number) {

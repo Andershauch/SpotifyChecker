@@ -3,6 +3,7 @@ import { getEnv } from "@/lib/env";
 import {
   getUnavailableTrack,
   replaceTrackReplacements,
+  upsertTrackReplacement,
   type CurrentUnavailableTrackRow,
 } from "@/lib/db";
 import { fetchTrackSuggestionContext, searchTrackOnSpotify } from "@/lib/spotify";
@@ -34,10 +35,57 @@ export async function generateAndStoreTrackReplacements(input: {
   }
 
   const trackContext = await fetchTrackSuggestionContext(input.trackId);
-  const suggestionResult = await generateTrackReplacementSuggestions({
-    unavailableTrack,
-    trackContext,
+  const directTitleMatch = await searchTrackOnSpotify({
+    trackName: trackContext.trackName || unavailableTrack.track_name,
+    artistName: trackContext.artistNames[0] ?? null,
+    durationMs: trackContext.durationMs ?? unavailableTrack.duration_ms,
+    excludeTrackId: input.trackId,
+    requireExactTitle: true,
+    maxDurationDifferenceMs: 60_000,
+    allowVersionTitleMatch: true,
+    limit: 10,
+    useBroadFallback: true,
   });
+  const directTitleSuggestion = directTitleMatch
+    ? {
+        suggestedTrackName: directTitleMatch.trackName,
+        suggestedArtistName: directTitleMatch.artistName ?? "Ukendt kunstner",
+        suggestedSpotifyUrl: directTitleMatch.spotifyUrl,
+        suggestedSpotifyTrackId: directTitleMatch.trackId,
+        durationMs: directTitleMatch.durationMs,
+        estimatedBpm: null,
+        reasoningSummary: "spotify-title-duration-match",
+      }
+    : null;
+  if (directTitleSuggestion) {
+    await upsertTrackReplacement({
+      playlistId: input.playlistId,
+      unavailableTrackId: input.trackId,
+      referenceArtistName: null,
+      referenceEstimatedBpm: null,
+      sourceModel: getEnv().OPENAI_SUGGESTION_MODEL,
+      suggestionIndex: 0,
+      ...directTitleSuggestion,
+    });
+  }
+
+  let suggestionResult: z.infer<typeof replacementResponseSchema>;
+  try {
+    suggestionResult = await generateTrackReplacementSuggestions({
+      unavailableTrack,
+      trackContext,
+    });
+  } catch (error) {
+    if (directTitleSuggestion) {
+      return {
+        referenceArtistName: null,
+        referenceEstimatedBpm: null,
+        suggestions: [directTitleSuggestion],
+      };
+    }
+
+    throw error;
+  }
   const hydratedSuggestions = await Promise.all(
     suggestionResult.suggestions.map(async (suggestion) => {
       const spotifyMatch =
@@ -58,6 +106,15 @@ export async function generateAndStoreTrackReplacements(input: {
       };
     }),
   );
+  const suggestionsToStore = [
+    ...(directTitleSuggestion ? [directTitleSuggestion] : []),
+    ...hydratedSuggestions
+      .filter((suggestion) => suggestion.suggestedSpotifyTrackId !== directTitleMatch?.trackId)
+      .map((suggestion) => ({
+        ...suggestion,
+        reasoningSummary: "format-only",
+      })),
+  ];
 
   await replaceTrackReplacements({
     playlistId: input.playlistId,
@@ -65,7 +122,7 @@ export async function generateAndStoreTrackReplacements(input: {
     referenceArtistName: suggestionResult.referenceArtistName,
     referenceEstimatedBpm: suggestionResult.referenceEstimatedBpm,
     sourceModel: getEnv().OPENAI_SUGGESTION_MODEL,
-    suggestions: hydratedSuggestions.map((suggestion, index) => ({
+    suggestions: suggestionsToStore.map((suggestion, index) => ({
       suggestionIndex: index + 1,
       suggestedTrackName: suggestion.suggestedTrackName,
       suggestedArtistName: suggestion.suggestedArtistName,
@@ -74,13 +131,13 @@ export async function generateAndStoreTrackReplacements(input: {
         suggestion.suggestedSpotifyTrackId ?? extractSpotifyTrackId(suggestion.suggestedSpotifyUrl),
       durationMs: suggestion.durationMs,
       estimatedBpm: suggestion.estimatedBpm,
-      reasoningSummary: "format-only",
+      reasoningSummary: suggestion.reasoningSummary,
     })),
   });
 
   return {
     ...suggestionResult,
-    suggestions: hydratedSuggestions,
+    suggestions: suggestionsToStore,
   };
 }
 
@@ -112,6 +169,7 @@ async function generateTrackReplacementSuggestions(input: {
       numberOfSuggestions: 2,
       preferSpotifyLinks: true,
       keepSimilarDuration: true,
+      durationToleranceMs: 1_000,
       includeEstimatedBpm: true,
       avoidExactSameTrack: true,
     },
@@ -128,7 +186,9 @@ async function generateTrackReplacementSuggestions(input: {
       instructions:
         "Du hjælper med musik-curation. Når du får et Spotify-track, skal du identificere titel, kunstner, " +
         "version/remix/edit hvis det fremgår, ca. længde og et kvalificeret BPM-estimat. " +
-        "Returnér derefter præcis 2 konkrete alternativer, som matcher samme stil, omtrent samme længde og samme tempo/BPM. " +
+        "Returnér derefter præcis 2 konkrete alternativer, som matcher samme stil og samme tempo/BPM. " +
+        "De 2 alternativer skal være inden for plus/minus 1 sekund af originalens længde, hvis originalens længde er kendt. " +
+        "Hvis du ikke kan finde et forslag inden for den tolerance, så vælg det tætteste realistiske Spotify-track og angiv dets bedste kendte længde. " +
         "Ingen begrundelser, ingen ekstra forklaring, kun struktureret data. " +
         "Returnér kun forslag, som sandsynligvis findes på Spotify, og undgå det originale track.",
       input: JSON.stringify(promptPayload),

@@ -501,6 +501,72 @@ export async function replaceTrackReplacements(input: {
   ]);
 }
 
+export async function upsertTrackReplacement(input: {
+  playlistId: string;
+  unavailableTrackId: string;
+  referenceArtistName: string | null;
+  referenceEstimatedBpm: number | null;
+  sourceModel: string;
+  suggestionIndex: number;
+  suggestedTrackName: string;
+  suggestedArtistName: string;
+  suggestedSpotifyUrl: string | null;
+  suggestedSpotifyTrackId: string | null;
+  durationMs: number | null;
+  estimatedBpm: number | null;
+  reasoningSummary: string;
+}) {
+  const sql = getSql();
+
+  await sql`
+    INSERT INTO track_replacements (
+      playlist_id,
+      unavailable_track_id,
+      reference_artist_name,
+      reference_estimated_bpm,
+      suggestion_index,
+      suggested_track_name,
+      suggested_artist_name,
+      suggested_spotify_url,
+      suggested_spotify_track_id,
+      duration_ms,
+      estimated_bpm,
+      reasoning_summary,
+      source_model,
+      generated_at
+    )
+    VALUES (
+      ${input.playlistId},
+      ${input.unavailableTrackId},
+      ${input.referenceArtistName},
+      ${input.referenceEstimatedBpm},
+      ${input.suggestionIndex},
+      ${input.suggestedTrackName},
+      ${input.suggestedArtistName},
+      ${input.suggestedSpotifyUrl},
+      ${input.suggestedSpotifyTrackId},
+      ${input.durationMs},
+      ${input.estimatedBpm},
+      ${input.reasoningSummary},
+      ${input.sourceModel},
+      NOW()
+    )
+    ON CONFLICT (playlist_id, unavailable_track_id, suggestion_index)
+    DO UPDATE SET
+      reference_artist_name = EXCLUDED.reference_artist_name,
+      reference_estimated_bpm = EXCLUDED.reference_estimated_bpm,
+      suggested_track_name = EXCLUDED.suggested_track_name,
+      suggested_artist_name = EXCLUDED.suggested_artist_name,
+      suggested_spotify_url = EXCLUDED.suggested_spotify_url,
+      suggested_spotify_track_id = EXCLUDED.suggested_spotify_track_id,
+      duration_ms = EXCLUDED.duration_ms,
+      estimated_bpm = EXCLUDED.estimated_bpm,
+      reasoning_summary = EXCLUDED.reasoning_summary,
+      source_model = EXCLUDED.source_model,
+      generated_at = NOW()
+  `;
+}
+
 export async function updateCheckJob(
   jobId: string,
   patch: {

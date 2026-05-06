@@ -86,6 +86,7 @@ type UnavailablePlaylistGroup = {
       suggestedSpotifyTrackId: string | null;
       durationMs: number | null;
       estimatedBpm: number | null;
+      reasoningSummary: string;
       generatedAt: string;
     }>;
   }>;
@@ -1111,6 +1112,9 @@ export function RunCheckPanel() {
                               key={`${track.trackId}-${suggestion.suggestionIndex}`}
                               className="suggestion-card"
                             >
+                              {suggestion.reasoningSummary === "spotify-title-duration-match" ? (
+                                <span className="suggestion-label">Direkte titelmatch</span>
+                              ) : null}
                               <p className="suggestion-line">
                                 {suggestion.suggestedSpotifyUrl ? (
                                   <a

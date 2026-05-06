@@ -757,10 +757,20 @@ button:disabled {
 }
 
 .suggestion-card {
+  display: grid;
+  gap: 6px;
   padding: 10px 14px;
   border-radius: 14px;
   border: 1px solid rgba(29, 185, 84, 0.2);
   background: linear-gradient(180deg, rgba(232, 250, 238, 0.9), rgba(250, 255, 251, 0.95));
+}
+
+.suggestion-label {
+  color: var(--accent-deep);
+  font-size: 0.74rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .suggestion-line {
