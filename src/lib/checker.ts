@@ -13,6 +13,7 @@ import {
   getSql,
   heartbeatCheckRunLock,
   releaseCheckRunLock,
+  reconcilePlaylistCheckpointUnavailableCounts,
   setSpotifyCooldownState,
   updateCheckJob,
   upsertPlaylistCheckpoints,
@@ -238,6 +239,7 @@ export async function executeCheckJob(
   let checkedPlaylists = 0;
   let skippedPlaylists = 0;
   let deferredPlaylists = 0;
+  const scannedPlaylistIds = new Set<string>();
   const unavailableTracks: TrackAvailability[] = [];
   const pendingCheckpointWrites: Array<{
     playlistId: string;
@@ -468,6 +470,7 @@ export async function executeCheckJob(
 
       checkedTracks += result.checked;
       checkedPlaylists += 1;
+      scannedPlaylistIds.add(playlist.id);
       unavailableTracks.push(...result.unavailable);
       currentPlaylistContext = null;
 
@@ -525,7 +528,11 @@ export async function executeCheckJob(
     });
 
     await flushPendingCheckpoints(true);
-    const newUnavailableTracks = await persistUnavailableTracks(unavailableTracks);
+    const newUnavailableTracks = await persistUnavailableTracks(
+      unavailableTracks,
+      [...scannedPlaylistIds],
+    );
+    await reconcilePlaylistCheckpointUnavailableCounts([...scannedPlaylistIds]);
     await sendUnavailableTracksAlert(newUnavailableTracks);
     await clearSpotifyCooldownState();
 
@@ -830,8 +837,16 @@ async function syncJobControl(jobId: string, ownerId: string) {
   return job;
 }
 
-async function persistUnavailableTracks(unavailableTracks: TrackAvailability[]) {
+async function persistUnavailableTracks(
+  unavailableTracks: TrackAvailability[],
+  scannedPlaylistIds: string[],
+) {
+  if (scannedPlaylistIds.length === 0) {
+    return [];
+  }
+
   const sql = getSql();
+  const scannedPlaylistPayload = JSON.stringify(scannedPlaylistIds);
   const payload = unavailableTracks.map((track) => ({
     track_id: track.trackId,
     playlist_id: track.playlistId,
@@ -865,33 +880,35 @@ async function persistUnavailableTracks(unavailableTracks: TrackAvailability[]) 
       WHERE existing.track_id IS NULL
          OR existing.currently_unavailable = FALSE
     `,
-    payload.length === 0
-      ? sql`
-          UPDATE unavailable_tracks
-          SET currently_unavailable = FALSE
-          WHERE currently_unavailable = TRUE
-        `
-      : sql`
-          WITH incoming AS (
-            SELECT *
-            FROM jsonb_to_recordset(${JSON.stringify(payload)}::jsonb) AS value(
-              track_id TEXT,
-              playlist_id TEXT,
-              playlist_name TEXT,
-              track_name TEXT,
-              duration_ms INTEGER
-            )
-          )
-          UPDATE unavailable_tracks AS target
-          SET currently_unavailable = FALSE
-          WHERE target.currently_unavailable = TRUE
-            AND NOT EXISTS (
-              SELECT 1
-              FROM incoming
-              WHERE incoming.track_id = target.track_id
-                AND incoming.playlist_id = target.playlist_id
-            )
-        `,
+    sql`
+      WITH scanned_playlists AS (
+        SELECT value AS playlist_id
+        FROM jsonb_array_elements_text(${scannedPlaylistPayload}::jsonb) AS value
+      ),
+      incoming AS (
+        SELECT *
+        FROM jsonb_to_recordset(${JSON.stringify(payload)}::jsonb) AS value(
+          track_id TEXT,
+          playlist_id TEXT,
+          playlist_name TEXT,
+          track_name TEXT,
+          duration_ms INTEGER
+        )
+      )
+      UPDATE unavailable_tracks AS target
+      SET currently_unavailable = FALSE
+      WHERE target.currently_unavailable = TRUE
+        AND target.playlist_id IN (
+          SELECT playlist_id
+          FROM scanned_playlists
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM incoming
+          WHERE incoming.track_id = target.track_id
+            AND incoming.playlist_id = target.playlist_id
+        )
+    `,
     payload.length === 0
       ? sql`SELECT 1 WHERE FALSE`
       : sql`

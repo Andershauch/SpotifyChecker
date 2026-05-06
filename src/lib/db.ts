@@ -46,6 +46,34 @@ export type MonitoredPlaylistRow = {
   updated_at: string;
 };
 
+export type CurrentUnavailableTrackRow = {
+  playlist_id: string;
+  playlist_name: string;
+  track_id: string;
+  track_name: string;
+  duration_ms: number | null;
+  first_seen_at: string;
+  last_seen_at: string;
+  currently_unavailable: boolean;
+};
+
+export type TrackReplacementRow = {
+  playlist_id: string;
+  unavailable_track_id: string;
+  reference_artist_name: string | null;
+  reference_estimated_bpm: number | null;
+  suggestion_index: number;
+  suggested_track_name: string;
+  suggested_artist_name: string;
+  suggested_spotify_url: string | null;
+  suggested_spotify_track_id: string | null;
+  duration_ms: number | null;
+  estimated_bpm: number | null;
+  reasoning_summary: string;
+  source_model: string;
+  generated_at: string;
+};
+
 type AppRuntimeStateRow = {
   state_key: string;
   state_value: Record<string, unknown>;
@@ -134,6 +162,36 @@ export async function ensureSchema() {
         END IF;
       END
       $$;
+    `;
+
+    await sql`
+      CREATE TABLE IF NOT EXISTS track_replacements (
+        playlist_id TEXT NOT NULL,
+        unavailable_track_id TEXT NOT NULL,
+        reference_artist_name TEXT,
+        reference_estimated_bpm INTEGER,
+        suggestion_index INTEGER NOT NULL,
+        suggested_track_name TEXT NOT NULL,
+        suggested_artist_name TEXT NOT NULL,
+        suggested_spotify_url TEXT,
+        suggested_spotify_track_id TEXT,
+        duration_ms INTEGER,
+        estimated_bpm INTEGER,
+        reasoning_summary TEXT NOT NULL,
+        source_model TEXT NOT NULL,
+        generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (playlist_id, unavailable_track_id, suggestion_index)
+      );
+    `;
+
+    await sql`
+      ALTER TABLE track_replacements
+      ADD COLUMN IF NOT EXISTS reference_artist_name TEXT
+    `;
+
+    await sql`
+      ALTER TABLE track_replacements
+      ADD COLUMN IF NOT EXISTS reference_estimated_bpm INTEGER
     `;
 
     await sql`
@@ -255,6 +313,192 @@ export async function getLatestCheckJob() {
   `) as CheckJobRow[];
 
   return rows[0] ?? null;
+}
+
+export async function getCurrentUnavailableTracks() {
+  const sql = getSql();
+  const rows = (await sql`
+    SELECT
+      playlist_id,
+      playlist_name,
+      track_id,
+      track_name,
+      duration_ms,
+      first_seen_at,
+      last_seen_at,
+      currently_unavailable
+    FROM unavailable_tracks
+    WHERE currently_unavailable = TRUE
+    ORDER BY playlist_name ASC, track_name ASC
+  `) as CurrentUnavailableTrackRow[];
+
+  return rows;
+}
+
+export async function getKnownUnavailableTracks() {
+  const sql = getSql();
+  const rows = (await sql`
+    SELECT
+      playlist_id,
+      playlist_name,
+      track_id,
+      track_name,
+      duration_ms,
+      first_seen_at,
+      last_seen_at,
+      currently_unavailable
+    FROM unavailable_tracks
+    ORDER BY currently_unavailable DESC, playlist_name ASC, track_name ASC
+  `) as CurrentUnavailableTrackRow[];
+
+  return rows;
+}
+
+export async function getUnavailableTrack(
+  playlistId: string,
+  trackId: string,
+) {
+  const sql = getSql();
+  const rows = (await sql`
+    SELECT
+      playlist_id,
+      playlist_name,
+      track_id,
+      track_name,
+      duration_ms,
+      first_seen_at,
+      last_seen_at,
+      currently_unavailable
+    FROM unavailable_tracks
+    WHERE playlist_id = ${playlistId}
+      AND track_id = ${trackId}
+    LIMIT 1
+  `) as CurrentUnavailableTrackRow[];
+
+  return rows[0] ?? null;
+}
+
+export async function getTrackReplacementsForCurrentUnavailableTracks() {
+  const sql = getSql();
+  const rows = (await sql`
+    SELECT
+      playlist_id,
+      unavailable_track_id,
+      reference_artist_name,
+      reference_estimated_bpm,
+      suggestion_index,
+      suggested_track_name,
+      suggested_artist_name,
+      suggested_spotify_url,
+      suggested_spotify_track_id,
+      duration_ms,
+      estimated_bpm,
+      reasoning_summary,
+      source_model,
+      generated_at
+    FROM track_replacements
+    ORDER BY playlist_id ASC, unavailable_track_id ASC, suggestion_index ASC
+  `) as TrackReplacementRow[];
+
+  return rows;
+}
+
+export async function replaceTrackReplacements(input: {
+  playlistId: string;
+  unavailableTrackId: string;
+  referenceArtistName: string | null;
+  referenceEstimatedBpm: number | null;
+  sourceModel: string;
+  suggestions: Array<{
+    suggestionIndex: number;
+    suggestedTrackName: string;
+    suggestedArtistName: string;
+    suggestedSpotifyUrl: string | null;
+    suggestedSpotifyTrackId: string | null;
+    durationMs: number | null;
+    estimatedBpm: number | null;
+    reasoningSummary: string;
+  }>;
+}) {
+  const sql = getSql();
+
+  await sql.transaction([
+    sql`
+      DELETE FROM track_replacements
+      WHERE playlist_id = ${input.playlistId}
+        AND unavailable_track_id = ${input.unavailableTrackId}
+    `,
+    input.suggestions.length === 0
+      ? sql`SELECT 1 WHERE FALSE`
+      : sql`
+          WITH incoming AS (
+            SELECT *
+            FROM jsonb_to_recordset(${JSON.stringify(
+              input.suggestions.map((suggestion) => ({
+                playlist_id: input.playlistId,
+                unavailable_track_id: input.unavailableTrackId,
+                reference_artist_name: input.referenceArtistName,
+                reference_estimated_bpm: input.referenceEstimatedBpm,
+                suggestion_index: suggestion.suggestionIndex,
+                suggested_track_name: suggestion.suggestedTrackName,
+                suggested_artist_name: suggestion.suggestedArtistName,
+                suggested_spotify_url: suggestion.suggestedSpotifyUrl,
+                suggested_spotify_track_id: suggestion.suggestedSpotifyTrackId,
+                duration_ms: suggestion.durationMs,
+                estimated_bpm: suggestion.estimatedBpm,
+                reasoning_summary: suggestion.reasoningSummary,
+                source_model: input.sourceModel,
+              })),
+            )}::jsonb) AS value(
+              playlist_id TEXT,
+              unavailable_track_id TEXT,
+              reference_artist_name TEXT,
+              reference_estimated_bpm INTEGER,
+              suggestion_index INTEGER,
+              suggested_track_name TEXT,
+              suggested_artist_name TEXT,
+              suggested_spotify_url TEXT,
+              suggested_spotify_track_id TEXT,
+              duration_ms INTEGER,
+              estimated_bpm INTEGER,
+              reasoning_summary TEXT,
+              source_model TEXT
+            )
+          )
+          INSERT INTO track_replacements (
+            playlist_id,
+            unavailable_track_id,
+            reference_artist_name,
+            reference_estimated_bpm,
+            suggestion_index,
+            suggested_track_name,
+            suggested_artist_name,
+            suggested_spotify_url,
+            suggested_spotify_track_id,
+            duration_ms,
+            estimated_bpm,
+            reasoning_summary,
+            source_model,
+            generated_at
+          )
+          SELECT
+            playlist_id,
+            unavailable_track_id,
+            reference_artist_name,
+            reference_estimated_bpm,
+            suggestion_index,
+            suggested_track_name,
+            suggested_artist_name,
+            suggested_spotify_url,
+            suggested_spotify_track_id,
+            duration_ms,
+            estimated_bpm,
+            reasoning_summary,
+            source_model,
+            NOW()
+          FROM incoming
+        `,
+  ]);
 }
 
 export async function updateCheckJob(
@@ -554,6 +798,54 @@ export async function upsertPlaylistCheckpoints(
         playlist_checkpoints.current_unavailable_count
       ),
       last_run_job_id = EXCLUDED.last_run_job_id
+  `;
+}
+
+export async function reconcilePlaylistCheckpointUnavailableCounts(playlistIds?: string[]) {
+  if (playlistIds && playlistIds.length === 0) {
+    return;
+  }
+
+  const sql = getSql();
+
+  if (!playlistIds) {
+    await sql`
+      UPDATE playlist_checkpoints AS checkpoint
+      SET current_unavailable_count = COALESCE(counts.unavailable_count, 0)
+      FROM (
+        SELECT
+          checkpoint.playlist_id,
+          COUNT(track.track_id)::INTEGER AS unavailable_count
+        FROM playlist_checkpoints checkpoint
+        LEFT JOIN unavailable_tracks track
+          ON track.playlist_id = checkpoint.playlist_id
+         AND track.currently_unavailable = TRUE
+        GROUP BY checkpoint.playlist_id
+      ) counts
+      WHERE counts.playlist_id = checkpoint.playlist_id
+    `;
+    return;
+  }
+
+  await sql`
+    WITH target_playlists AS (
+      SELECT value AS playlist_id
+      FROM jsonb_array_elements_text(${JSON.stringify(playlistIds)}::jsonb) AS value
+    ),
+    counts AS (
+      SELECT
+        target_playlists.playlist_id,
+        COUNT(track.track_id)::INTEGER AS unavailable_count
+      FROM target_playlists
+      LEFT JOIN unavailable_tracks track
+        ON track.playlist_id = target_playlists.playlist_id
+       AND track.currently_unavailable = TRUE
+      GROUP BY target_playlists.playlist_id
+    )
+    UPDATE playlist_checkpoints AS checkpoint
+    SET current_unavailable_count = counts.unavailable_count
+    FROM counts
+    WHERE counts.playlist_id = checkpoint.playlist_id
   `;
 }
 

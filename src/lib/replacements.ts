@@ -1,0 +1,242 @@
+import { z } from "zod";
+import { getEnv } from "@/lib/env";
+import {
+  getUnavailableTrack,
+  replaceTrackReplacements,
+  type CurrentUnavailableTrackRow,
+} from "@/lib/db";
+import { fetchTrackSuggestionContext, searchTrackOnSpotify } from "@/lib/spotify";
+
+const suggestionSchema = z.object({
+  suggestedTrackName: z.string().min(1),
+  suggestedArtistName: z.string().min(1),
+  suggestedSpotifyUrl: z.string().url().nullable(),
+  suggestedSpotifyTrackId: z.string().min(1).nullable(),
+  durationMs: z.number().int().nonnegative().nullable(),
+  estimatedBpm: z.number().int().nonnegative().nullable(),
+});
+
+const replacementResponseSchema = z.object({
+  referenceArtistName: z.string().min(1).nullable(),
+  referenceEstimatedBpm: z.number().int().nonnegative().nullable(),
+  suggestions: z.array(suggestionSchema).length(2),
+});
+
+export type TrackReplacementSuggestion = z.infer<typeof suggestionSchema>;
+
+export async function generateAndStoreTrackReplacements(input: {
+  playlistId: string;
+  trackId: string;
+}) {
+  const unavailableTrack = await getUnavailableTrack(input.playlistId, input.trackId);
+  if (!unavailableTrack) {
+    throw new Error("Det utilgængelige track blev ikke fundet i databasen.");
+  }
+
+  const trackContext = await fetchTrackSuggestionContext(input.trackId);
+  const suggestionResult = await generateTrackReplacementSuggestions({
+    unavailableTrack,
+    trackContext,
+  });
+  const hydratedSuggestions = await Promise.all(
+    suggestionResult.suggestions.map(async (suggestion) => {
+      const spotifyMatch =
+        suggestion.suggestedSpotifyUrl && suggestion.suggestedSpotifyTrackId
+          ? null
+          : await searchTrackOnSpotify({
+              trackName: suggestion.suggestedTrackName,
+              artistName: suggestion.suggestedArtistName,
+              durationMs: suggestion.durationMs,
+            });
+
+      return {
+        ...suggestion,
+        suggestedSpotifyUrl: suggestion.suggestedSpotifyUrl ?? spotifyMatch?.spotifyUrl ?? null,
+        suggestedSpotifyTrackId:
+          suggestion.suggestedSpotifyTrackId ?? spotifyMatch?.trackId ?? null,
+        durationMs: suggestion.durationMs ?? spotifyMatch?.durationMs ?? null,
+      };
+    }),
+  );
+
+  await replaceTrackReplacements({
+    playlistId: input.playlistId,
+    unavailableTrackId: input.trackId,
+    referenceArtistName: suggestionResult.referenceArtistName,
+    referenceEstimatedBpm: suggestionResult.referenceEstimatedBpm,
+    sourceModel: getEnv().OPENAI_SUGGESTION_MODEL,
+    suggestions: hydratedSuggestions.map((suggestion, index) => ({
+      suggestionIndex: index + 1,
+      suggestedTrackName: suggestion.suggestedTrackName,
+      suggestedArtistName: suggestion.suggestedArtistName,
+      suggestedSpotifyUrl: suggestion.suggestedSpotifyUrl,
+      suggestedSpotifyTrackId:
+        suggestion.suggestedSpotifyTrackId ?? extractSpotifyTrackId(suggestion.suggestedSpotifyUrl),
+      durationMs: suggestion.durationMs,
+      estimatedBpm: suggestion.estimatedBpm,
+      reasoningSummary: "format-only",
+    })),
+  });
+
+  return {
+    ...suggestionResult,
+    suggestions: hydratedSuggestions,
+  };
+}
+
+async function generateTrackReplacementSuggestions(input: {
+  unavailableTrack: CurrentUnavailableTrackRow;
+  trackContext: {
+    trackId: string;
+    trackName: string;
+    artistNames: string[];
+    durationMs: number | null;
+    spotifyUrl: string | null;
+  };
+}): Promise<z.infer<typeof replacementResponseSchema>> {
+  const apiKey = getEnv().OPENAI_API_KEY;
+  if (!apiKey) {
+    throw new Error("OPENAI_API_KEY mangler. Sæt den før du genererer erstatningsforslag.");
+  }
+
+  const promptPayload = {
+    playlistName: input.unavailableTrack.playlist_name,
+    unavailableTrack: {
+      trackId: input.unavailableTrack.track_id,
+      trackName: input.trackContext.trackName || input.unavailableTrack.track_name,
+      artistNames: input.trackContext.artistNames,
+      durationMs: input.trackContext.durationMs ?? input.unavailableTrack.duration_ms,
+      spotifyUrl: input.trackContext.spotifyUrl,
+    },
+    goal: {
+      numberOfSuggestions: 2,
+      preferSpotifyLinks: true,
+      keepSimilarDuration: true,
+      includeEstimatedBpm: true,
+      avoidExactSameTrack: true,
+    },
+  };
+
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: getEnv().OPENAI_SUGGESTION_MODEL,
+      instructions:
+        "Du hjælper med musik-curation. Når du får et Spotify-track, skal du identificere titel, kunstner, " +
+        "version/remix/edit hvis det fremgår, ca. længde og et kvalificeret BPM-estimat. " +
+        "Returnér derefter præcis 2 konkrete alternativer, som matcher samme stil, omtrent samme længde og samme tempo/BPM. " +
+        "Ingen begrundelser, ingen ekstra forklaring, kun struktureret data. " +
+        "Returnér kun forslag, som sandsynligvis findes på Spotify, og undgå det originale track.",
+      input: JSON.stringify(promptPayload),
+      text: {
+        format: {
+          type: "json_schema",
+          name: "track_replacement_suggestions",
+          strict: true,
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              referenceArtistName: {
+                type: ["string", "null"],
+              },
+              referenceEstimatedBpm: {
+                type: ["integer", "null"],
+              },
+              suggestions: {
+                type: "array",
+                minItems: 2,
+                maxItems: 2,
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    suggestedTrackName: { type: "string" },
+                    suggestedArtistName: { type: "string" },
+                    suggestedSpotifyUrl: { type: ["string", "null"] },
+                    suggestedSpotifyTrackId: { type: ["string", "null"] },
+                    durationMs: { type: ["integer", "null"] },
+                    estimatedBpm: { type: ["integer", "null"] },
+                  },
+                  required: [
+                    "suggestedTrackName",
+                    "suggestedArtistName",
+                    "suggestedSpotifyUrl",
+                    "suggestedSpotifyTrackId",
+                    "durationMs",
+                    "estimatedBpm",
+                  ],
+                },
+              },
+            },
+            required: ["referenceArtistName", "referenceEstimatedBpm", "suggestions"],
+          },
+        },
+      },
+    }),
+    cache: "no-store",
+    signal: AbortSignal.timeout(30_000),
+  });
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(
+      `OpenAI suggestion request failed: ${response.status}${message ? ` ${message}` : ""}`,
+    );
+  }
+
+  const payload = (await response.json()) as {
+    output?: Array<{
+      type?: string;
+      content?: Array<{
+        type?: string;
+        text?: string;
+      }>;
+    }>;
+  };
+
+  const text = extractOutputText(payload);
+  if (!text) {
+    throw new Error("OpenAI returnerede ikke noget JSON-output til erstatningsforslag.");
+  }
+
+  const parsed = replacementResponseSchema.safeParse(JSON.parse(text));
+  if (!parsed.success) {
+    throw new Error(`OpenAI output matchede ikke schemaet: ${parsed.error.message}`);
+  }
+
+  return parsed.data;
+}
+
+function extractOutputText(payload: {
+  output?: Array<{
+    type?: string;
+    content?: Array<{
+      type?: string;
+      text?: string;
+    }>;
+  }>;
+}) {
+  for (const item of payload.output ?? []) {
+    for (const content of item.content ?? []) {
+      if (content.type === "output_text" && typeof content.text === "string") {
+        return content.text;
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractSpotifyTrackId(url: string | null) {
+  if (!url) {
+    return null;
+  }
+
+  const match = url.match(/track\/([a-zA-Z0-9]+)/);
+  return match?.[1] ?? null;
+}

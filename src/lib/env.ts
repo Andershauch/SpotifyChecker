@@ -15,6 +15,8 @@ const envSchema = z.object({
   ALERT_EMAIL_TO: z.string().email(),
   ALERT_EMAIL_FROM: z.string().email(),
   CRON_SECRET: z.string().min(24),
+  OPENAI_API_KEY: z.string().min(1).optional(),
+  OPENAI_SUGGESTION_MODEL: z.string().min(1).optional().default("gpt-5-mini"),
 });
 
 let cachedEnv: z.infer<typeof envSchema> | null = null;

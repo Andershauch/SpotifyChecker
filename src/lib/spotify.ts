@@ -48,6 +48,34 @@ type TrackEntry = {
   } | null;
 };
 
+type TrackDetails = {
+  id: string;
+  name: string;
+  duration_ms?: number;
+  artists?: Array<{
+    name?: string;
+  }>;
+  external_urls?: {
+    spotify?: string;
+  };
+};
+
+type SpotifySearchResponse = {
+  tracks?: {
+    items?: Array<{
+      id: string;
+      name: string;
+      duration_ms?: number;
+      external_urls?: {
+        spotify?: string;
+      };
+      artists?: Array<{
+        name?: string;
+      }>;
+    }>;
+  };
+};
+
 type CurrentSpotifyUserProfile = {
   id: string;
   display_name?: string | null;
@@ -75,6 +103,22 @@ export type TrackAvailability = {
   trackName: string;
   durationMs: number | null;
   unavailableReason: string;
+};
+
+export type TrackSuggestionContext = {
+  trackId: string;
+  trackName: string;
+  artistNames: string[];
+  durationMs: number | null;
+  spotifyUrl: string | null;
+};
+
+export type SpotifyTrackSearchMatch = {
+  trackId: string;
+  trackName: string;
+  artistName: string | null;
+  spotifyUrl: string | null;
+  durationMs: number | null;
 };
 
 export type SpotifyConnectionStatus = {
@@ -272,6 +316,65 @@ export async function fetchUnavailableTracksForPlaylist(
   }
 
   return { unavailable, checked };
+}
+
+export async function fetchTrackSuggestionContext(
+  trackId: string,
+  context?: SpotifyExecutionContext,
+): Promise<TrackSuggestionContext> {
+  const accessToken = await getAccessToken();
+  const details = await spotifyGet<TrackDetails>(
+    `https://api.spotify.com/v1/tracks/${trackId}?market=${getEnv().SPOTIFY_MARKET}`,
+    accessToken,
+    context,
+  );
+
+  return {
+    trackId: details.id,
+    trackName: details.name,
+    artistNames: (details.artists ?? [])
+      .map((artist) => artist.name?.trim())
+      .filter((value): value is string => Boolean(value)),
+    durationMs: typeof details.duration_ms === "number" ? details.duration_ms : null,
+    spotifyUrl: details.external_urls?.spotify ?? null,
+  };
+}
+
+export async function searchTrackOnSpotify(input: {
+  trackName: string;
+  artistName?: string | null;
+  durationMs?: number | null;
+  context?: SpotifyExecutionContext;
+}): Promise<SpotifyTrackSearchMatch | null> {
+  const accessToken = await getAccessToken();
+  const queryParts = [`track:${input.trackName}`];
+  if (input.artistName) {
+    queryParts.push(`artist:${input.artistName}`);
+  }
+
+  const url =
+    `https://api.spotify.com/v1/search?q=${encodeURIComponent(queryParts.join(" "))}` +
+    `&type=track&limit=5&market=${getEnv().SPOTIFY_MARKET}`;
+
+  const response = await spotifyGet<SpotifySearchResponse>(url, accessToken, input.context);
+  const items = response.tracks?.items ?? [];
+  if (items.length === 0) {
+    return null;
+  }
+
+  const best = [...items].sort((left, right) => {
+    const leftScore = getSearchMatchScore(left, input);
+    const rightScore = getSearchMatchScore(right, input);
+    return rightScore - leftScore;
+  })[0];
+
+  return {
+    trackId: best.id,
+    trackName: best.name,
+    artistName: best.artists?.[0]?.name?.trim() ?? null,
+    spotifyUrl: best.external_urls?.spotify ?? null,
+    durationMs: typeof best.duration_ms === "number" ? best.duration_ms : null,
+  };
 }
 
 async function getRequiredSpotifySession() {
@@ -555,6 +658,44 @@ function formatSpotifyErrorMessage(status: number, url: string, retryAfterSecond
   }
 
   return `Spotify API request failed: ${status} (${url})`;
+}
+
+function getSearchMatchScore(
+  candidate: {
+    name: string;
+    duration_ms?: number;
+    artists?: Array<{ name?: string }>;
+  },
+  input: {
+    trackName: string;
+    artistName?: string | null;
+    durationMs?: number | null;
+  },
+) {
+  let score = 0;
+  const candidateName = candidate.name.toLowerCase();
+  const requestedName = input.trackName.toLowerCase();
+
+  if (candidateName === requestedName) {
+    score += 100;
+  } else if (candidateName.includes(requestedName) || requestedName.includes(candidateName)) {
+    score += 60;
+  }
+
+  const candidateArtist = candidate.artists?.[0]?.name?.toLowerCase() ?? "";
+  const requestedArtist = input.artistName?.toLowerCase() ?? "";
+  if (requestedArtist && candidateArtist === requestedArtist) {
+    score += 80;
+  } else if (requestedArtist && candidateArtist.includes(requestedArtist)) {
+    score += 40;
+  }
+
+  if (typeof input.durationMs === "number" && typeof candidate.duration_ms === "number") {
+    const diff = Math.abs(candidate.duration_ms - input.durationMs);
+    score += Math.max(0, 40 - Math.floor(diff / 1000));
+  }
+
+  return score;
 }
 
 function formatRetryLogSuffix(error: unknown, retryAfterSeconds: number) {

@@ -63,8 +63,47 @@ type RunStatusResponse = {
   latestJob: JobSnapshot | null;
 };
 
+type UnavailablePlaylistGroup = {
+  playlistId: string;
+  playlistName: string;
+  playlistUrl: string;
+  trackCount: number;
+  tracks: Array<{
+    trackId: string;
+    trackName: string;
+    trackUrl: string;
+    durationMs: number | null;
+    firstSeenAt: string;
+    lastSeenAt: string;
+    currentlyUnavailable: boolean;
+    referenceArtistName: string | null;
+    referenceEstimatedBpm: number | null;
+    suggestions: Array<{
+      suggestionIndex: number;
+      suggestedTrackName: string;
+      suggestedArtistName: string;
+      suggestedSpotifyUrl: string | null;
+      suggestedSpotifyTrackId: string | null;
+      durationMs: number | null;
+      estimatedBpm: number | null;
+      generatedAt: string;
+    }>;
+  }>;
+};
+
+type UnavailableResponse = {
+  playlists: UnavailablePlaylistGroup[];
+  totalPlaylists: number;
+  totalTracks: number;
+  currentTracks: number;
+  historicalTracks: number;
+};
+
+type DashboardTab = "overview" | "findings" | "settings";
+
 export function RunCheckPanel() {
   const router = useRouter();
+  const [activeTab, setActiveTab] = useState<DashboardTab>("overview");
   const [message, setMessage] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [queuedJobNotice, setQueuedJobNotice] = useState<{
@@ -72,6 +111,7 @@ export function RunCheckPanel() {
     label: string;
   } | null>(null);
   const [runStatus, setRunStatus] = useState<RunStatusResponse | null>(null);
+  const [unavailableData, setUnavailableData] = useState<UnavailableResponse | null>(null);
   const [isRefreshingStatus, setIsRefreshingStatus] = useState(false);
   const [isConnectingSpotify, setIsConnectingSpotify] = useState(false);
   const [isDisconnectingSpotify, setIsDisconnectingSpotify] = useState(false);
@@ -81,6 +121,8 @@ export function RunCheckPanel() {
   const [isResettingCheckpoints, setIsResettingCheckpoints] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [isUnlocking, setIsUnlocking] = useState(false);
+  const [unavailableMessage, setUnavailableMessage] = useState<string | null>(null);
+  const [generatingSuggestionsFor, setGeneratingSuggestionsFor] = useState<string | null>(null);
 
   useEffect(() => {
     const searchParams = new URLSearchParams(window.location.search);
@@ -133,6 +175,43 @@ export function RunCheckPanel() {
     const intervalId = window.setInterval(() => {
       void refreshStatus(false);
     }, 2000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function refreshUnavailable(showErrors: boolean) {
+      const { response, payload } = await requestApi<UnavailableResponse>("/api/unavailable");
+
+      if (!response.ok) {
+        if (!cancelled && showErrors && response.status !== 401) {
+          setUnavailableMessage(
+            getApiError(payload, response.status, "Kunne ikke hente utilgængelige tracks"),
+          );
+        }
+        if (!cancelled && response.status === 401) {
+          setUnavailableData(null);
+          setUnavailableMessage(null);
+        }
+        return;
+      }
+
+      if (!cancelled) {
+        setUnavailableData(payload as UnavailableResponse);
+        setUnavailableMessage(null);
+      }
+    }
+
+    void refreshUnavailable(true);
+
+    const intervalId = window.setInterval(() => {
+      void refreshUnavailable(false);
+    }, 10000);
 
     return () => {
       cancelled = true;
@@ -214,6 +293,16 @@ export function RunCheckPanel() {
           at: activeJob.heartbeatAt ?? activeJob.startedAt ?? activeJob.requestedAt,
         }
       : null;
+  const unavailablePlaylists = unavailableData?.playlists ?? [];
+  const unavailableTrackRows = unavailablePlaylists.flatMap((playlist) =>
+    playlist.tracks.map((track) => ({ playlist, track })),
+  );
+  const tracksWithSuggestions = unavailableTrackRows.filter(
+    ({ track }) => track.suggestions.length > 0,
+  ).length;
+  const currentUnavailableTracks =
+    unavailableData?.currentTracks ??
+    unavailableTrackRows.filter(({ track }) => track.currentlyUnavailable).length;
 
   async function refreshStatusNow() {
     setIsRefreshingStatus(true);
@@ -233,9 +322,29 @@ export function RunCheckPanel() {
 
       setRunStatus(payload as RunStatusResponse);
       setStatusMessage(null);
+      await refreshUnavailableNow();
     } finally {
       setIsRefreshingStatus(false);
     }
+  }
+
+  async function refreshUnavailableNow() {
+    const { response, payload } = await requestApi<UnavailableResponse>("/api/unavailable");
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        setUnavailableData(null);
+        setUnavailableMessage(null);
+        return;
+      }
+      setUnavailableMessage(
+        getApiError(payload, response.status, "Kunne ikke hente utilgængelige tracks"),
+      );
+      return;
+    }
+
+    setUnavailableData(payload as UnavailableResponse);
+    setUnavailableMessage(null);
   }
 
   async function handleStart(event: React.FormEvent<HTMLFormElement>) {
@@ -304,6 +413,7 @@ export function RunCheckPanel() {
 
       setMessage("Spotify-forbindelsen er afbrudt.");
       await refreshStatusNow();
+      await refreshUnavailableNow();
     } finally {
       setIsDisconnectingSpotify(false);
     }
@@ -335,6 +445,7 @@ export function RunCheckPanel() {
         `Checkpoints nulstillet. ${deletedCount} playlist-checkpoints blev fjernet, så næste check laver et fuldt scan.`,
       );
       await refreshStatusNow();
+      await refreshUnavailableNow();
       router.refresh();
     } finally {
       setIsResettingCheckpoints(false);
@@ -417,6 +528,7 @@ export function RunCheckPanel() {
           : "Der var ingen aktiv lås at frigive.",
       );
       await refreshStatusNow();
+      await refreshUnavailableNow();
       router.refresh();
     } finally {
       setIsUnlocking(false);
@@ -452,15 +564,76 @@ export function RunCheckPanel() {
     }
   }
 
+  async function handleGenerateSuggestions(playlistId: string, trackId: string) {
+    const requestKey = `${playlistId}::${trackId}`;
+    setMessage(null);
+    setGeneratingSuggestionsFor(requestKey);
+
+    try {
+      const { response, payload } = await requestApi<{ suggestions?: unknown[] }>(
+        "/api/replacements/generate",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ playlistId, trackId }),
+        },
+      );
+
+      if (!response.ok) {
+        setMessage(getApiError(payload, response.status, "Kunne ikke finde alternativer"));
+        return;
+      }
+
+      setMessage("Der er nu hentet 2 alternativer til tracket.");
+      await refreshUnavailableNow();
+    } finally {
+      setGeneratingSuggestionsFor(null);
+    }
+  }
+
   return (
-    <section className="card control-shell">
-      <div className="section-heading">
-        <div>
-          <p className="eyebrow">Kontrolcenter</p>
-          <h2>Drift, test og recovery</h2>
+    <section className="card control-shell app-shell">
+      <header className="app-header">
+        <div className="app-title-block">
+          <p className="eyebrow">Operationspanel</p>
+          <h1>SpotifyCheck</h1>
+          <p>
+            Daglig overvågning af dine offentlige Spotify-playlister for tracks, der ikke er
+            tilgængelige i din region.
+          </p>
         </div>
-        <p className="section-note">Alle handlinger her er designet til at være så skånsomme mod Spotify som muligt.</p>
-      </div>
+
+        <div className="app-health-strip" aria-label="Aktuel status">
+          <span className={spotifyConnection?.connected ? "pill pill-running" : "pill pill-idle"}>
+            {spotifyConnection?.connected ? "Spotify forbundet" : "Spotify ikke forbundet"}
+          </span>
+          <span className={getRunPillClass(panelState)}>{getRunPillText(panelState)}</span>
+          <span className={currentUnavailableTracks > 0 ? "pill pill-danger" : "pill pill-ready"}>
+            {currentUnavailableTracks} aktuelle / {unavailableTrackRows.length} kendte
+          </span>
+        </div>
+      </header>
+
+      <nav className="app-tabs" aria-label="Hovedmenu">
+        {[
+          { id: "overview", label: "Overblik" },
+          { id: "findings", label: "Fund og alternativer" },
+          { id: "settings", label: "Indstillinger" },
+        ].map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            className={`app-tab ${activeTab === tab.id ? "app-tab-active" : ""}`}
+            onClick={() => {
+              setActiveTab(tab.id as DashboardTab);
+            }}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </nav>
 
       <form className="run-form" onSubmit={handleStart}>
         <div className="ops-toolbar">
@@ -556,7 +729,8 @@ export function RunCheckPanel() {
           </div>
         </div>
 
-        <div className="control-grid control-grid-rich">
+        {activeTab === "overview" ? (
+          <div className="control-grid control-grid-rich">
           <div className="operations-main">
             <section className="status-box operations-card">
               <div className="operations-header">
@@ -572,6 +746,16 @@ export function RunCheckPanel() {
                   <strong>Næste sikre forsøg</strong>
                   <p>
                     Vent til {formatDateTime(activeCooldown.until)} før du prøver igen. Panelet blokerer nu også smoke test under aktiv cooldown.
+                  </p>
+                </div>
+              ) : null}
+
+              {!activeCooldown ? (
+                <div className="run-message run-message-muted">
+                  <strong>Cron-status</strong>
+                  <p>
+                    Vercel Cron er sat til dagligt 07:00 UTC. I dansk sommertid svarer det til
+                    09:00, og i vintertid til 08:00.
                   </p>
                 </div>
               ) : null}
@@ -796,7 +980,326 @@ export function RunCheckPanel() {
               </div>
             </details>
           </aside>
-        </div>
+          </div>
+        ) : null}
+
+        {activeTab === "findings" ? (
+        <section className="status-box unavailable-card">
+          <div className="section-heading section-heading-compact">
+            <div>
+              <p className="eyebrow">Fund og alternativer</p>
+              <h3>Playlister med utilgængelige tracks</h3>
+            </div>
+            {unavailableData ? (
+              <p className="section-note">
+                {unavailableData.currentTracks} aktuelle og {unavailableData.historicalTracks} historiske fund fordelt på{" "}
+                {unavailableData.totalPlaylists} playliste
+                {unavailableData.totalPlaylists === 1 ? "" : "r"}. {tracksWithSuggestions} af{" "}
+                {unavailableTrackRows.length} tracks har forslag.
+              </p>
+            ) : null}
+          </div>
+
+          {unavailableMessage ? <p className="run-message">{unavailableMessage}</p> : null}
+
+          {!unavailableMessage && unavailablePlaylists.length === 0 ? (
+            <p className="helper-text">
+              Ingen aktuelle utilgængelige tracks er registreret lige nu.
+            </p>
+          ) : null}
+
+          <div className="playlist-findings">
+            {unavailablePlaylists.map((playlist, index) => (
+              <details
+                key={playlist.playlistId}
+                className="playlist-finding"
+                open={index === 0}
+              >
+                <summary>
+                  <span className="playlist-finding-head">
+                    <span className="playlist-finding-copy">
+                      <strong>
+                        <a
+                          href={playlist.playlistUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="spotify-link"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                          }}
+                        >
+                          {playlist.playlistName}
+                        </a>
+                      </strong>
+                      <small>
+                        {playlist.trackCount} utilgængelige track
+                        {playlist.trackCount === 1 ? "" : "s"}
+                      </small>
+                    </span>
+                    <span className="playlist-finding-meta">
+                      <span className="playlist-count-badge">{playlist.trackCount}</span>
+                      <span className="playlist-chevron" aria-hidden="true">
+                        ▾
+                      </span>
+                    </span>
+                  </span>
+                </summary>
+
+                <ul className="track-list">
+                  {playlist.tracks.map((track) => (
+                    <li key={`${playlist.playlistId}-${track.trackId}`}>
+                      <div>
+                        <strong>
+                          <a
+                            href={track.trackUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="spotify-link"
+                          >
+                            {track.trackName}
+                          </a>
+                        </strong>
+                        {track.durationMs ? <span>{formatDuration(track.durationMs)}</span> : null}
+                      </div>
+                      <small>
+                        <span
+                          className={
+                            track.currentlyUnavailable
+                              ? "track-status track-status-current"
+                              : "track-status track-status-historical"
+                          }
+                        >
+                          {track.currentlyUnavailable ? "Aktuel" : "Historisk"}
+                        </span>{" "}
+                        Senest set {formatDateTime(track.lastSeenAt)}
+                      </small>
+
+                      <div className="track-actions">
+                        <button
+                          type="button"
+                          className="secondary-button suggestion-button"
+                          onClick={() => {
+                            void handleGenerateSuggestions(playlist.playlistId, track.trackId);
+                          }}
+                          disabled={
+                            generatingSuggestionsFor === `${playlist.playlistId}::${track.trackId}`
+                          }
+                        >
+                          {generatingSuggestionsFor === `${playlist.playlistId}::${track.trackId}`
+                            ? "Finder alternativer..."
+                            : track.suggestions.length > 0
+                              ? "Opdatér alternativer"
+                              : "Find 2 alternativer"}
+                        </button>
+                      </div>
+
+                      {track.suggestions.length > 0 ? (
+                        <div className="suggestion-list">
+                          <p className="suggestion-intro">
+                            Alternativer til &quot;{track.trackName}&quot; af{" "}
+                            {track.referenceArtistName ?? "ukendt kunstner"} —{" "}
+                            {track.durationMs ? formatDuration(track.durationMs) : "ukendt længde"}
+                            {" / "}
+                            {track.referenceEstimatedBpm
+                              ? `${track.referenceEstimatedBpm} BPM`
+                              : "ukendt BPM"}
+                            :
+                          </p>
+
+                          {track.suggestions.map((suggestion) => (
+                            <article
+                              key={`${track.trackId}-${suggestion.suggestionIndex}`}
+                              className="suggestion-card"
+                            >
+                              <p className="suggestion-line">
+                                {suggestion.suggestedSpotifyUrl ? (
+                                  <a
+                                    href={suggestion.suggestedSpotifyUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="spotify-link"
+                                  >
+                                    {suggestion.suggestedTrackName}
+                                  </a>
+                                ) : (
+                                  suggestion.suggestedTrackName
+                                )}{" "}
+                                — {suggestion.suggestedArtistName} —{" "}
+                                {suggestion.durationMs
+                                  ? formatDuration(suggestion.durationMs)
+                                  : "ukendt længde"}
+                                {" / "}
+                                {suggestion.estimatedBpm
+                                  ? `${suggestion.estimatedBpm} BPM`
+                                  : "ukendt BPM"}
+                              </p>
+                            </article>
+                          ))}
+                        </div>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ))}
+          </div>
+        </section>
+        ) : null}
+
+        {activeTab === "settings" ? (
+          <section className="settings-view">
+            <div className="status-box connection-card">
+              <div className="section-heading section-heading-compact">
+                <div>
+                  <p className="eyebrow">Nuværende Spotify-session</p>
+                  <h3>Forbindelse</h3>
+                </div>
+              </div>
+
+              <p className="helper-text">
+                OAuth-sessionen ligger server-side. Appen kan derfor køre cron uden at browseren
+                står åben, så længe token kan refreshes.
+              </p>
+
+              <dl className="session-stats">
+                <div>
+                  <dt>Bruger</dt>
+                  <dd>{spotifyConnection?.displayName ?? spotifyConnection?.spotifyUserId ?? "-"}</dd>
+                </div>
+                <div>
+                  <dt>Forbundet</dt>
+                  <dd>
+                    {spotifyConnection?.connectedAt
+                      ? formatDateTime(spotifyConnection.connectedAt)
+                      : "-"}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Token udløber</dt>
+                  <dd>
+                    {spotifyConnection?.expiresAt
+                      ? formatDateTime(spotifyConnection.expiresAt)
+                      : "-"}
+                  </dd>
+                </div>
+              </dl>
+
+              <div className="toolbar-actions toolbar-actions-stacked">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    void handleConnectSpotify();
+                  }}
+                  disabled={isConnectingSpotify || Boolean(spotifyConnection?.connected)}
+                >
+                  {isConnectingSpotify
+                    ? "Sender videre..."
+                    : spotifyConnection?.connected
+                      ? "Spotify er forbundet"
+                      : "Forbind Spotify"}
+                </button>
+
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    void handleDisconnectSpotify();
+                  }}
+                  disabled={!spotifyConnection?.connected || isDisconnectingSpotify}
+                >
+                  {isDisconnectingSpotify ? "Afbryder..." : "Afbryd Spotify"}
+                </button>
+              </div>
+            </div>
+
+            <div className="status-box operations-card">
+              <div className="section-heading section-heading-compact">
+                <div>
+                  <p className="eyebrow">Historik og drift</p>
+                  <h3>Seneste kørsel</h3>
+                </div>
+              </div>
+
+              <div className="metrics-board">
+                {primaryStats.length > 0 ? (
+                  primaryStats.map((stat) => (
+                    <article key={stat.label} className="metric-tile">
+                      <span>{stat.label}</span>
+                      <strong>{stat.value}</strong>
+                    </article>
+                  ))
+                ) : (
+                  <article className="metric-tile metric-tile-wide">
+                    <span>Status</span>
+                    <strong>Ingen kørsel endnu</strong>
+                  </article>
+                )}
+              </div>
+
+              {activeJob?.errorMessage ? (
+                <p className="run-message">{activeJob.errorMessage}</p>
+              ) : null}
+            </div>
+
+            <details className="status-box recovery-drawer" open>
+              <summary>
+                <span>
+                  <span className="eyebrow">Recovery og checkpoints</span>
+                  <strong>Avancerede handlinger</strong>
+                </span>
+              </summary>
+
+              <div className="actions settings-actions">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    void handleResetCheckpoints();
+                  }}
+                  disabled={isRunning || isResettingCheckpoints}
+                >
+                  {isResettingCheckpoints ? "Nulstiller..." : "Nulstil checkpoints"}
+                </button>
+
+                <button
+                  type="button"
+                  className="danger-button"
+                  onClick={() => {
+                    void handleCancel();
+                  }}
+                  disabled={!isRunning || isCancelling}
+                >
+                  {isCancelling ? "Stopper..." : "Stop job"}
+                </button>
+
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    void handleUnlock();
+                  }}
+                  disabled={!isRunning || isUnlocking}
+                >
+                  {isUnlocking ? "Frigiver..." : "Nød-frigiv lås"}
+                </button>
+              </div>
+
+              <div className="recovery-copy">
+                <p className="helper-text">
+                  Nulstil checkpoints bør kun bruges, når vi aktivt vil gennemtvinge en tungere
+                  genopbygning. Normal drift bør lade checkpoint-modellen fordele Spotify-kald over
+                  flere små kørsler.
+                </p>
+                {runStatus?.lock ? (
+                  <p className="helper-text">
+                    Aktuel lås udløber om {formatSeconds(runStatus.lock.expiresInSeconds)}.
+                  </p>
+                ) : null}
+              </div>
+            </details>
+          </section>
+        ) : null}
       </form>
 
       {queuedJobStatusMessage ? (
@@ -967,4 +1470,15 @@ function formatJobStatus(status: string) {
     default:
       return status;
   }
+}
+
+function formatDuration(durationMs: number | null) {
+  if (!durationMs || durationMs < 0) {
+    return null;
+  }
+
+  const totalSeconds = Math.floor(durationMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
