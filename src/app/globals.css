@@ -293,15 +293,117 @@ button:disabled {
   max-width: 740px;
 }
 
-.app-health-strip {
+.app-menu {
+  border: 1px solid rgba(201, 185, 164, 0.78);
+  border-radius: 22px;
+  background:
+    linear-gradient(180deg, rgba(255, 253, 250, 0.92), rgba(248, 243, 235, 0.78));
+  overflow: hidden;
+}
+
+.app-menu summary {
   display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.app-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.app-menu summary span {
+  color: var(--accent-deep);
+  font-size: 0.76rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.app-menu summary strong {
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.app-menu-bar {
+  display: grid;
+  gap: 12px;
+  padding: 0 12px 12px;
+}
+
+.app-status-board {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.app-status-card {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  min-height: 62px;
+  align-content: center;
+  justify-items: start;
+  padding: 10px 12px;
+  border: 1px solid rgba(201, 185, 164, 0.64);
+  border-radius: 16px;
+  background: rgba(255, 253, 249, 0.62);
+  color: inherit;
+  text-align: left;
+  box-shadow: none;
+}
+
+.app-status-card span {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.app-status-card strong {
+  color: var(--text);
+  font-size: 1.12rem;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+}
+
+.app-status-alert {
+  border-color: rgba(185, 76, 29, 0.24);
+  background:
+    linear-gradient(180deg, rgba(255, 238, 232, 0.78), rgba(255, 253, 249, 0.72));
+}
+
+.app-status-alert strong {
+  color: #8c3913;
+}
+
+.app-status-action {
+  border-color: rgba(29, 185, 84, 0.34);
+  background:
+    linear-gradient(180deg, rgba(29, 185, 84, 0.92), rgba(24, 172, 76, 0.86));
+  color: #06140a;
+}
+
+.app-status-action span {
+  color: rgba(6, 20, 10, 0.72);
+}
+
+.app-status-action strong {
+  color: #06140a;
+}
+
+.app-status-action:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 20px rgba(29, 185, 84, 0.18);
 }
 
 .app-tabs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
   padding: 5px;
   border: 1px solid rgba(201, 185, 164, 0.78);
@@ -348,12 +450,61 @@ button:disabled {
   gap: 16px;
 }
 
-.toolbar-strip,
+.action-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.action-card-button {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  min-height: 112px;
+  justify-items: start;
+  align-content: center;
+  border-radius: 18px;
+  padding: 18px;
+  text-align: left;
+}
+
+.action-card-button span {
+  font-size: 1.05rem;
+}
+
+.action-card-button small {
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.action-card-primary small {
+  color: rgba(9, 19, 12, 0.72);
+}
+
 .toolbar-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
   align-items: center;
+}
+
+.toolbar-intro {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.toolbar-intro div {
+  display: grid;
+  gap: 3px;
+}
+
+.toolbar-intro strong {
+  font-size: 1.04rem;
+  letter-spacing: -0.02em;
 }
 
 .toolbar-actions-cluster {
@@ -832,8 +983,13 @@ button:disabled {
     align-items: end;
   }
 
-  .app-health-strip {
-    justify-content: flex-end;
+  .app-menu-bar {
+    grid-template-columns: minmax(380px, 1fr) minmax(360px, 0.78fr);
+    align-items: stretch;
+  }
+
+  .app-status-board {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .control-grid-rich {
@@ -876,6 +1032,10 @@ button:disabled {
     border-radius: 22px;
   }
 
+  .app-status-board {
+    grid-template-columns: 1fr;
+  }
+
   dd {
     font-size: 1.3rem;
   }
@@ -894,6 +1054,10 @@ button:disabled {
   .toolbar-actions-cluster {
     display: grid;
     gap: 10px;
+  }
+
+  .toolbar-intro {
+    display: grid;
   }
 
   .toolbar-cluster {

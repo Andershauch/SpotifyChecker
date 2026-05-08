@@ -421,6 +421,11 @@ export async function replaceTrackReplacements(input: {
   }>;
 }) {
   const sql = getSql();
+  const uniqueSuggestions = [
+    ...new Map(
+      input.suggestions.map((suggestion) => [suggestion.suggestionIndex, suggestion]),
+    ).values(),
+  ];
 
   await sql.transaction([
     sql`
@@ -428,13 +433,13 @@ export async function replaceTrackReplacements(input: {
       WHERE playlist_id = ${input.playlistId}
         AND unavailable_track_id = ${input.unavailableTrackId}
     `,
-    input.suggestions.length === 0
+    uniqueSuggestions.length === 0
       ? sql`SELECT 1 WHERE FALSE`
       : sql`
           WITH incoming AS (
             SELECT *
             FROM jsonb_to_recordset(${JSON.stringify(
-              input.suggestions.map((suggestion) => ({
+              uniqueSuggestions.map((suggestion) => ({
                 playlist_id: input.playlistId,
                 unavailable_track_id: input.unavailableTrackId,
                 reference_artist_name: input.referenceArtistName,
@@ -806,7 +811,10 @@ export async function upsertPlaylistCheckpoints(
   }
 
   const sql = getSql();
-  const payload = inputs.map((input) => ({
+  const uniqueInputs = [
+    ...new Map(inputs.map((input) => [input.playlistId, input])).values(),
+  ];
+  const payload = uniqueInputs.map((input) => ({
     playlist_id: input.playlistId,
     playlist_name: input.playlistName,
     snapshot_id: input.snapshotId,

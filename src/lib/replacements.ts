@@ -26,6 +26,7 @@ const replacementResponseSchema = z.object({
 export type TrackReplacementSuggestion = z.infer<typeof suggestionSchema>;
 
 const OPENAI_SUGGESTION_TIMEOUT_MS = 55_000;
+const OPENAI_DURATION_TOLERANCE_MS = 1_000;
 
 export async function generateAndStoreTrackReplacements(input: {
   playlistId: string;
@@ -192,7 +193,7 @@ async function generateTrackReplacementSuggestions(input: {
           "version/remix/edit hvis det fremgår, ca. længde og et kvalificeret BPM-estimat. " +
           "Returnér derefter præcis 2 konkrete alternativer, som matcher samme stil og samme tempo/BPM. " +
           "De 2 alternativer skal være inden for plus/minus 1 sekund af originalens længde, hvis originalens længde er kendt. " +
-          "Hvis du ikke kan finde et forslag inden for den tolerance, så vælg det tætteste realistiske Spotify-track og angiv dets bedste kendte længde. " +
+          "Hvis du ikke kan finde præcis 2 forslag inden for den tolerance, må du ikke bruge forslag med større tidsafvigelse. " +
           "Ingen begrundelser, ingen ekstra forklaring, kun struktureret data. " +
           "Returnér kun forslag, som sandsynligvis findes på Spotify, og undgå det originale track.",
         input: JSON.stringify(promptPayload),
@@ -284,7 +285,38 @@ async function generateTrackReplacementSuggestions(input: {
     throw new Error(`OpenAI output matchede ikke schemaet: ${parsed.error.message}`);
   }
 
-  return parsed.data;
+  return enforceOpenAiDurationTolerance(
+    parsed.data,
+    input.trackContext.durationMs ?? input.unavailableTrack.duration_ms,
+  );
+}
+
+function enforceOpenAiDurationTolerance(
+  result: z.infer<typeof replacementResponseSchema>,
+  referenceDurationMs: number | null,
+) {
+  if (typeof referenceDurationMs !== "number") {
+    return result;
+  }
+
+  const suggestionsWithinTolerance = result.suggestions.filter((suggestion) => {
+    if (typeof suggestion.durationMs !== "number") {
+      return false;
+    }
+
+    return Math.abs(suggestion.durationMs - referenceDurationMs) <= OPENAI_DURATION_TOLERANCE_MS;
+  });
+
+  if (suggestionsWithinTolerance.length !== 2) {
+    throw new Error(
+      "OpenAI fandt ikke 2 alternativer inden for plus/minus 1 sekund af originalens længde. Prøv igen, eller brug et direkte Spotify titelmatch hvis det findes.",
+    );
+  }
+
+  return {
+    ...result,
+    suggestions: suggestionsWithinTolerance,
+  };
 }
 
 function extractOutputText(payload: {

@@ -847,7 +847,12 @@ async function persistUnavailableTracks(
 
   const sql = getSql();
   const scannedPlaylistPayload = JSON.stringify(scannedPlaylistIds);
-  const payload = unavailableTracks.map((track) => ({
+  const uniqueUnavailableTracks = [
+    ...new Map(
+      unavailableTracks.map((track) => [`${track.playlistId}::${track.trackId}`, track]),
+    ).values(),
+  ];
+  const payload = uniqueUnavailableTracks.map((track) => ({
     track_id: track.trackId,
     playlist_id: track.playlistId,
     playlist_name: track.playlistName,

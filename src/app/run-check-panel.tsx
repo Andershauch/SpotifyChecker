@@ -100,7 +100,7 @@ type UnavailableResponse = {
   historicalTracks: number;
 };
 
-type DashboardTab = "overview" | "findings" | "settings";
+type DashboardTab = "overview" | "findings" | "actions" | "settings";
 
 export function RunCheckPanel() {
   const router = useRouter();
@@ -284,7 +284,6 @@ export function RunCheckPanel() {
         { label: "Stop ønsket", value: activeJob.cancelRequested ? "Ja" : "Nej" },
       ]
     : [];
-  const recoveryOpen = isRunning || Boolean(activeCooldown);
   const latestRateLimitEvent =
     !activeCooldown &&
     activeJob?.status === "error" &&
@@ -304,6 +303,9 @@ export function RunCheckPanel() {
   const currentUnavailableTracks =
     unavailableData?.currentTracks ??
     unavailableTrackRows.filter(({ track }) => track.currentlyUnavailable).length;
+  const latestRunUnavailableTracks = activeJob?.unavailableCount ?? currentUnavailableTracks;
+  const canStartScan =
+    Boolean(spotifyConnection?.connected) && !isRunning && !isStarting && !activeCooldown;
 
   async function refreshStatusNow() {
     setIsRefreshingStatus(true);
@@ -348,8 +350,7 @@ export function RunCheckPanel() {
     setUnavailableMessage(null);
   }
 
-  async function handleStart(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function startCheck() {
     setMessage(null);
     setIsStarting(true);
 
@@ -373,6 +374,11 @@ export function RunCheckPanel() {
     } finally {
       setIsStarting(false);
     }
+  }
+
+  async function handleStart(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await startCheck();
   }
 
   async function handleConnectSpotify() {
@@ -606,132 +612,74 @@ export function RunCheckPanel() {
           </p>
         </div>
 
-        <div className="app-health-strip" aria-label="Aktuel status">
-          <span className={spotifyConnection?.connected ? "pill pill-running" : "pill pill-idle"}>
-            {spotifyConnection?.connected ? "Spotify forbundet" : "Spotify ikke forbundet"}
-          </span>
-          <span className={getRunPillClass(panelState)}>{getRunPillText(panelState)}</span>
-          <span className={currentUnavailableTracks > 0 ? "pill pill-danger" : "pill pill-ready"}>
-            {currentUnavailableTracks} aktuelle / {unavailableTrackRows.length} kendte
-          </span>
-        </div>
       </header>
 
-      <nav className="app-tabs" aria-label="Hovedmenu">
-        {[
-          { id: "overview", label: "Overblik" },
-          { id: "findings", label: "Fund og alternativer" },
-          { id: "settings", label: "Indstillinger" },
-        ].map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            className={`app-tab ${activeTab === tab.id ? "app-tab-active" : ""}`}
-            onClick={() => {
-              setActiveTab(tab.id as DashboardTab);
-            }}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </nav>
+      <details className="app-menu" open>
+        <summary>
+          <span>Menu</span>
+          <strong>{getTabLabel(activeTab)}</strong>
+        </summary>
 
-      <form className="run-form" onSubmit={handleStart}>
-        <div className="ops-toolbar">
-          <div className="toolbar-strip">
-            <span
+        <div className="app-menu-bar">
+          <nav className="app-tabs" aria-label="Hovedmenu">
+            {[
+              { id: "overview", label: "Overblik" },
+              { id: "findings", label: "Fund" },
+              { id: "actions", label: "Handlinger" },
+              { id: "settings", label: "Indstillinger" },
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                className={`app-tab ${activeTab === tab.id ? "app-tab-active" : ""}`}
+                onClick={() => {
+                  setActiveTab(tab.id as DashboardTab);
+                }}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </nav>
+
+          <div className="app-status-board" aria-label="Aktuel status">
+            <article className="app-status-card">
+              <span>Spotify</span>
+              <strong>{spotifyConnection?.connected ? "Forbundet" : "Ikke forbundet"}</strong>
+            </article>
+            {canStartScan ? (
+              <button
+                type="button"
+                className="app-status-card app-status-action"
+                onClick={() => {
+                  void startCheck();
+                }}
+              >
+                <span>Drift</span>
+                <strong>Start scan</strong>
+              </button>
+            ) : (
+              <article className="app-status-card">
+                <span>Drift</span>
+                <strong>{getRunPillText(panelState)}</strong>
+              </article>
+            )}
+            <article
               className={
-                spotifyConnection?.connected ? "pill pill-running" : "pill pill-idle"
+                latestRunUnavailableTracks > 0
+                  ? "app-status-card app-status-alert"
+                  : "app-status-card"
               }
             >
-              {spotifyConnection?.connected ? "Spotify forbundet" : "Spotify ikke forbundet"}
-            </span>
-            <span className={getRunPillClass(panelState)}>{getRunPillText(panelState)}</span>
-            {activeCooldown ? (
-              <span className="pill pill-warning">
-                Cooldown til {formatTime(activeCooldown.until)}
-              </span>
-            ) : null}
-          </div>
-
-          <div className="toolbar-actions toolbar-actions-cluster">
-            <div className="toolbar-cluster">
-              <button
-                type="submit"
-                className="toolbar-primary"
-                disabled={
-                  !spotifyConnection?.connected ||
-                  isRunning ||
-                  isStarting ||
-                  Boolean(activeCooldown)
-                }
-              >
-                {isStarting
-                  ? "Starter..."
-                  : isRunning
-                    ? "Job kører allerede"
-                    : activeCooldown
-                      ? "Spotify cooldown aktiv"
-                      : "Start check"}
-              </button>
-
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={() => {
-                  void handleSmokeTest();
-                }}
-                disabled={
-                  !spotifyConnection?.connected ||
-                  isRunning ||
-                  isSmoking ||
-                  isStartingSample ||
-                  Boolean(activeCooldown)
-                }
-              >
-                {isSmoking
-                  ? "Tester..."
-                  : activeCooldown
-                    ? "Spotify cooldown aktiv"
-                    : "Smoke test"}
-              </button>
-
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={() => {
-                  void handleSampleStart();
-                }}
-                disabled={
-                  !spotifyConnection?.connected ||
-                  isRunning ||
-                  isStartingSample ||
-                  Boolean(activeCooldown)
-                }
-              >
-                {isStartingSample
-                  ? "Starter testscan..."
-                  : activeCooldown
-                    ? "Spotify cooldown aktiv"
-                    : "Testscan: 5 playlister"}
-              </button>
-            </div>
-
-            <button
-              type="button"
-              className="secondary-button toolbar-utility"
-              onClick={() => {
-                void refreshStatusNow();
-              }}
-              disabled={isRefreshingStatus}
-            >
-              {isRefreshingStatus ? "Opdaterer..." : "Opdater"}
-            </button>
+              <span>Aktuelle fund</span>
+              <strong>{latestRunUnavailableTracks}</strong>
+            </article>
           </div>
         </div>
+      </details>
 
+      <form className="run-form" onSubmit={handleStart}>
         {activeTab === "overview" ? (
-          <div className="control-grid control-grid-rich">
+          <div className="control-grid">
           <div className="operations-main">
             <section className="status-box operations-card">
               <div className="operations-header">
@@ -746,7 +694,7 @@ export function RunCheckPanel() {
                 <div className="run-message run-message-muted">
                   <strong>Næste sikre forsøg</strong>
                   <p>
-                    Vent til {formatDateTime(activeCooldown.until)} før du prøver igen. Panelet blokerer nu også smoke test under aktiv cooldown.
+                    Vent til {formatDateTime(activeCooldown.until)} før du prøver igen. Panelet blokerer nu også health check under aktiv cooldown.
                   </p>
                 </div>
               ) : null}
@@ -857,131 +805,88 @@ export function RunCheckPanel() {
               ) : null}
             </section>
           </div>
-
-          <aside className="operations-side">
-            <section className="status-box connection-card">
-              <div className="section-heading section-heading-compact">
-                <div>
-                  <p className="eyebrow">Spotify-session</p>
-                  <h3>Forbindelse</h3>
-                </div>
-              </div>
-
-              <p className="helper-text">
-                Appen bruger Spotify OAuth for én bruger og læser kun ejerens egne public playlister.
-              </p>
-
-              <dl className="session-stats">
-                <div>
-                  <dt>Bruger</dt>
-                  <dd>{spotifyConnection?.displayName ?? spotifyConnection?.spotifyUserId ?? "-"}</dd>
-                </div>
-                <div>
-                  <dt>Forbundet</dt>
-                  <dd>
-                    {spotifyConnection?.connectedAt
-                      ? formatDateTime(spotifyConnection.connectedAt)
-                      : "-"}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Token udløber</dt>
-                  <dd>
-                    {spotifyConnection?.expiresAt
-                      ? formatDateTime(spotifyConnection.expiresAt)
-                      : "-"}
-                  </dd>
-                </div>
-              </dl>
-
-              <div className="toolbar-actions toolbar-actions-stacked">
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => {
-                    void handleConnectSpotify();
-                  }}
-                  disabled={isConnectingSpotify || Boolean(spotifyConnection?.connected)}
-                >
-                  {isConnectingSpotify
-                    ? "Sender videre..."
-                    : spotifyConnection?.connected
-                      ? "Spotify er forbundet"
-                      : "Forbind Spotify"}
-                </button>
-
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => {
-                    void handleDisconnectSpotify();
-                  }}
-                  disabled={!spotifyConnection?.connected || isDisconnectingSpotify}
-                >
-                  {isDisconnectingSpotify ? "Afbryder..." : "Afbryd Spotify"}
-                </button>
-              </div>
-            </section>
-
-            <details className="status-box recovery-drawer" open={recoveryOpen}>
-              <summary>
-                <span>
-                  <span className="eyebrow">Drift og recovery</span>
-                  <strong>Avancerede handlinger</strong>
-                </span>
-              </summary>
-
-              <div className="actions">
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => {
-                    void handleResetCheckpoints();
-                  }}
-                  disabled={isRunning || isResettingCheckpoints}
-                >
-                  {isResettingCheckpoints ? "Nulstiller..." : "Nulstil checkpoints"}
-                </button>
-
-                <button
-                  type="button"
-                  className="danger-button"
-                  onClick={() => {
-                    void handleCancel();
-                  }}
-                  disabled={!isRunning || isCancelling}
-                >
-                  {isCancelling ? "Stopper..." : "Stop job"}
-                </button>
-
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => {
-                    void handleUnlock();
-                  }}
-                  disabled={!isRunning || isUnlocking}
-                >
-                  {isUnlocking ? "Frigiver..." : "Nød-frigiv lås"}
-                </button>
-              </div>
-
-              <div className="recovery-copy">
-                <p className="helper-text">
-                  “Stop job” sender et cancel-signal, som processen tjekker mellem Spotify-kald.
-                </p>
-                <p className="helper-text">
-                  “Nød-frigiv lås” er kun til fastlåste jobs, og “Nulstil checkpoints” tvinger et tungere track-scan næste gang.
-                </p>
-                {activeCooldown ? (
-                  <p className="helper-text">
-                    Spotify bad senest om pause indtil {formatDateTime(activeCooldown.until)}.
-                  </p>
-                ) : null}
-              </div>
-            </details>
-          </aside>
           </div>
+        ) : null}
+
+        {activeTab === "actions" ? (
+          <section className="status-box operations-card">
+            <div className="section-heading section-heading-compact">
+              <div>
+                <p className="eyebrow">Handlinger</p>
+                <h3>Scan og helbredstjek</h3>
+              </div>
+              {activeCooldown ? (
+                <span className="pill pill-warning">Cooldown til {formatTime(activeCooldown.until)}</span>
+              ) : (
+                <span className={getRunPillClass(panelState)}>{getRunPillText(panelState)}</span>
+              )}
+            </div>
+
+            <p className="helper-text">
+              Brug fuldt scan til daglig drift, health check som billig statuskontrol og kort
+              testscan til at validere parsing på få playlister.
+            </p>
+
+            <div className="action-grid">
+              <button
+                type="submit"
+                className="toolbar-primary action-card-button action-card-primary"
+                disabled={
+                  !canStartScan
+                }
+              >
+                <span>Start scan</span>
+                <small>Scanner næste batch efter checkpoint-strategien.</small>
+              </button>
+
+              <button
+                type="button"
+                className="secondary-button action-card-button"
+                onClick={() => {
+                  void handleSmokeTest();
+                }}
+                disabled={
+                  !spotifyConnection?.connected ||
+                  isRunning ||
+                  isSmoking ||
+                  isStartingSample ||
+                  Boolean(activeCooldown)
+                }
+              >
+                <span>{isSmoking ? "Tester..." : "Health check"}</span>
+                <small>Bekræfter Spotify-forbindelsen uden tung scanning.</small>
+              </button>
+
+              <button
+                type="button"
+                className="secondary-button action-card-button"
+                onClick={() => {
+                  void handleSampleStart();
+                }}
+                disabled={
+                  !spotifyConnection?.connected ||
+                  isRunning ||
+                  isStartingSample ||
+                  Boolean(activeCooldown)
+                }
+              >
+                <span>{isStartingSample ? "Starter testscan..." : "Kort testscan"}</span>
+                <small>Scanner kun de første 5 playlister.</small>
+              </button>
+
+              <button
+                type="button"
+                className="secondary-button action-card-button"
+                onClick={() => {
+                  void refreshStatusNow();
+                }}
+                disabled={isRefreshingStatus}
+              >
+                <span>{isRefreshingStatus ? "Opdaterer..." : "Opdater status"}</span>
+                <small>Henter frisk jobstatus og fund fra databasen.</small>
+              </button>
+            </div>
+          </section>
         ) : null}
 
         {activeTab === "findings" ? (
@@ -1372,6 +1277,19 @@ function getPanelState(input: {
   }
 
   return "ready" as const;
+}
+
+function getTabLabel(tab: DashboardTab) {
+  switch (tab) {
+    case "overview":
+      return "Overblik";
+    case "findings":
+      return "Fund";
+    case "actions":
+      return "Handlinger";
+    case "settings":
+      return "Indstillinger";
+  }
 }
 
 function getPanelSummary(
