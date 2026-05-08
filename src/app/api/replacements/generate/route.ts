@@ -32,14 +32,16 @@ export async function POST(request: Request) {
     const suggestions = await generateAndStoreTrackReplacements(parsed.data);
     return NextResponse.json({ suggestions });
   } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Kunne ikke generere erstatningsforslag.";
+
     return NextResponse.json(
       {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Kunne ikke generere erstatningsforslag.",
+        error: message,
       },
-      { status: 500 },
+      { status: message.includes("OpenAI brugte mere end") ? 504 : 500 },
     );
   }
 }

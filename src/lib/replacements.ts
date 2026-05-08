@@ -25,6 +25,8 @@ const replacementResponseSchema = z.object({
 
 export type TrackReplacementSuggestion = z.infer<typeof suggestionSchema>;
 
+const OPENAI_SUGGESTION_TIMEOUT_MS = 55_000;
+
 export async function generateAndStoreTrackReplacements(input: {
   playlistId: string;
   trackId: string;
@@ -175,72 +177,85 @@ async function generateTrackReplacementSuggestions(input: {
     },
   };
 
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: getEnv().OPENAI_SUGGESTION_MODEL,
-      instructions:
-        "Du hjælper med musik-curation. Når du får et Spotify-track, skal du identificere titel, kunstner, " +
-        "version/remix/edit hvis det fremgår, ca. længde og et kvalificeret BPM-estimat. " +
-        "Returnér derefter præcis 2 konkrete alternativer, som matcher samme stil og samme tempo/BPM. " +
-        "De 2 alternativer skal være inden for plus/minus 1 sekund af originalens længde, hvis originalens længde er kendt. " +
-        "Hvis du ikke kan finde et forslag inden for den tolerance, så vælg det tætteste realistiske Spotify-track og angiv dets bedste kendte længde. " +
-        "Ingen begrundelser, ingen ekstra forklaring, kun struktureret data. " +
-        "Returnér kun forslag, som sandsynligvis findes på Spotify, og undgå det originale track.",
-      input: JSON.stringify(promptPayload),
-      text: {
-        format: {
-          type: "json_schema",
-          name: "track_replacement_suggestions",
-          strict: true,
-          schema: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              referenceArtistName: {
-                type: ["string", "null"],
-              },
-              referenceEstimatedBpm: {
-                type: ["integer", "null"],
-              },
-              suggestions: {
-                type: "array",
-                minItems: 2,
-                maxItems: 2,
-                items: {
-                  type: "object",
-                  additionalProperties: false,
-                  properties: {
-                    suggestedTrackName: { type: "string" },
-                    suggestedArtistName: { type: "string" },
-                    suggestedSpotifyUrl: { type: ["string", "null"] },
-                    suggestedSpotifyTrackId: { type: ["string", "null"] },
-                    durationMs: { type: ["integer", "null"] },
-                    estimatedBpm: { type: ["integer", "null"] },
+  let response: Response;
+  try {
+    response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: getEnv().OPENAI_SUGGESTION_MODEL,
+        instructions:
+          "Du hjælper med musik-curation. Når du får et Spotify-track, skal du identificere titel, kunstner, " +
+          "version/remix/edit hvis det fremgår, ca. længde og et kvalificeret BPM-estimat. " +
+          "Returnér derefter præcis 2 konkrete alternativer, som matcher samme stil og samme tempo/BPM. " +
+          "De 2 alternativer skal være inden for plus/minus 1 sekund af originalens længde, hvis originalens længde er kendt. " +
+          "Hvis du ikke kan finde et forslag inden for den tolerance, så vælg det tætteste realistiske Spotify-track og angiv dets bedste kendte længde. " +
+          "Ingen begrundelser, ingen ekstra forklaring, kun struktureret data. " +
+          "Returnér kun forslag, som sandsynligvis findes på Spotify, og undgå det originale track.",
+        input: JSON.stringify(promptPayload),
+        text: {
+          format: {
+            type: "json_schema",
+            name: "track_replacement_suggestions",
+            strict: true,
+            schema: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                referenceArtistName: {
+                  type: ["string", "null"],
+                },
+                referenceEstimatedBpm: {
+                  type: ["integer", "null"],
+                },
+                suggestions: {
+                  type: "array",
+                  minItems: 2,
+                  maxItems: 2,
+                  items: {
+                    type: "object",
+                    additionalProperties: false,
+                    properties: {
+                      suggestedTrackName: { type: "string" },
+                      suggestedArtistName: { type: "string" },
+                      suggestedSpotifyUrl: { type: ["string", "null"] },
+                      suggestedSpotifyTrackId: { type: ["string", "null"] },
+                      durationMs: { type: ["integer", "null"] },
+                      estimatedBpm: { type: ["integer", "null"] },
+                    },
+                    required: [
+                      "suggestedTrackName",
+                      "suggestedArtistName",
+                      "suggestedSpotifyUrl",
+                      "suggestedSpotifyTrackId",
+                      "durationMs",
+                      "estimatedBpm",
+                    ],
                   },
-                  required: [
-                    "suggestedTrackName",
-                    "suggestedArtistName",
-                    "suggestedSpotifyUrl",
-                    "suggestedSpotifyTrackId",
-                    "durationMs",
-                    "estimatedBpm",
-                  ],
                 },
               },
+              required: ["referenceArtistName", "referenceEstimatedBpm", "suggestions"],
             },
-            required: ["referenceArtistName", "referenceEstimatedBpm", "suggestions"],
           },
         },
-      },
-    }),
-    cache: "no-store",
-    signal: AbortSignal.timeout(30_000),
-  });
+      }),
+      cache: "no-store",
+      signal: AbortSignal.timeout(OPENAI_SUGGESTION_TIMEOUT_MS),
+    });
+  } catch (error) {
+    if (isTimeoutError(error)) {
+      throw new Error(
+        `OpenAI brugte mere end ${Math.round(
+          OPENAI_SUGGESTION_TIMEOUT_MS / 1000,
+        )} sekunder på at finde alternativer. Prøv igen om lidt, eller brug et direkte Spotify titelmatch hvis det findes.`,
+      );
+    }
+
+    throw error;
+  }
 
   if (!response.ok) {
     const message = await response.text();
@@ -290,6 +305,15 @@ function extractOutputText(payload: {
   }
 
   return null;
+}
+
+function isTimeoutError(error: unknown) {
+  return (
+    error instanceof Error &&
+    (error.name === "AbortError" ||
+      error.name === "TimeoutError" ||
+      error.message.toLowerCase().includes("aborted"))
+  );
 }
 
 function extractSpotifyTrackId(url: string | null) {

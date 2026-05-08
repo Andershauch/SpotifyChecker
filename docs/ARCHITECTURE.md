@@ -401,7 +401,7 @@ budget for normal runs.
 
 Current default:
 
-- up to 25 playlists with full item scanning per run
+- up to 100 playlists with full item scanning per run
 
 The budget is spent in priority order:
 
