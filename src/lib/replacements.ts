@@ -40,10 +40,11 @@ export async function generateAndStoreTrackReplacements(input: {
   const trackContext = await fetchTrackSuggestionContext(input.trackId);
   const directTitleMatch = await searchTrackOnSpotify({
     trackName: trackContext.trackName || unavailableTrack.track_name,
-    artistName: trackContext.artistNames[0] ?? null,
+    artistName: trackContext.artistNames[0] ?? unavailableTrack.primary_artist_name ?? null,
     durationMs: trackContext.durationMs ?? unavailableTrack.duration_ms,
     excludeTrackId: input.trackId,
     requireExactTitle: true,
+    requireArtistMatch: true,
     maxDurationDifferenceMs: 60_000,
     allowVersionTitleMatch: true,
     limit: 10,

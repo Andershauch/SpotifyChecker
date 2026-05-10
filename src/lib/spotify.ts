@@ -382,6 +382,7 @@ export async function searchTrackOnSpotify(input: {
   durationMs?: number | null;
   excludeTrackId?: string | null;
   requireExactTitle?: boolean;
+  requireArtistMatch?: boolean;
   allowVersionTitleMatch?: boolean;
   maxDurationDifferenceMs?: number | null;
   limit?: number;
@@ -963,12 +964,15 @@ function isAcceptableTrackSearchMatch(
     id: string;
     name: string;
     duration_ms?: number;
+    artists?: Array<{ name?: string }>;
   },
   input: {
     trackName: string;
+    artistName?: string | null;
     durationMs?: number | null;
     excludeTrackId?: string | null;
     requireExactTitle?: boolean;
+    requireArtistMatch?: boolean;
     allowVersionTitleMatch?: boolean;
     maxDurationDifferenceMs?: number | null;
   },
@@ -984,6 +988,10 @@ function isAcceptableTrackSearchMatch(
     return false;
   }
 
+  if (input.requireArtistMatch && !isMatchingArtist(item.artists ?? [], input.artistName ?? null)) {
+    return false;
+  }
+
   if (
     typeof input.maxDurationDifferenceMs === "number" &&
     typeof input.durationMs === "number" &&
@@ -994,6 +1002,39 @@ function isAcceptableTrackSearchMatch(
   }
 
   return true;
+}
+
+function isMatchingArtist(
+  candidateArtists: Array<{ name?: string }>,
+  requestedArtist: string | null,
+) {
+  const normalizedRequested = normalizeArtistText(requestedArtist);
+  if (!normalizedRequested) {
+    return true;
+  }
+
+  const requestedTokens = getArtistSearchTokens(normalizedRequested);
+  if (requestedTokens.length === 0) {
+    return true;
+  }
+
+  return candidateArtists.some((artist) => {
+    const normalizedCandidate = normalizeArtistText(artist.name);
+    if (!normalizedCandidate) {
+      return false;
+    }
+
+    if (
+      normalizedCandidate === normalizedRequested ||
+      normalizedCandidate.includes(normalizedRequested) ||
+      normalizedRequested.includes(normalizedCandidate)
+    ) {
+      return true;
+    }
+
+    const candidateTokens = getArtistSearchTokens(normalizedCandidate);
+    return requestedTokens.some((token) => candidateTokens.includes(token));
+  });
 }
 
 function isMatchingTrackTitle(candidateTitle: string, requestedTitle: string, allowVersionMatch: boolean) {
@@ -1029,6 +1070,25 @@ function normalizeSearchText(value: string) {
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim()
     .replace(/\s+/g, " ");
+}
+
+function normalizeArtistText(value: string | null | undefined) {
+  if (!value) {
+    return "";
+  }
+
+  return normalizeSearchText(value)
+    .replace(/\bfeat\b.*$/g, " ")
+    .replace(/\bft\b.*$/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function getArtistSearchTokens(normalizedArtist: string) {
+  return normalizedArtist
+    .split(/\band\b|&|,|\bx\b/gi)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
 }
 
 function formatRetryLogSuffix(error: unknown, retryAfterSeconds: number) {
