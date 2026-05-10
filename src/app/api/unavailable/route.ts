@@ -40,6 +40,7 @@ export async function GET(request: Request) {
         firstSeenAt: string;
         lastSeenAt: string;
         currentlyUnavailable: boolean;
+        primaryArtistName: string | null;
         referenceArtistName: string | null;
         referenceEstimatedBpm: number | null;
         suggestions: Array<{
@@ -93,6 +94,7 @@ export async function GET(request: Request) {
       firstSeenAt: track.first_seen_at,
       lastSeenAt: track.last_seen_at,
       currentlyUnavailable: track.currently_unavailable,
+      primaryArtistName: track.primary_artist_name,
       referenceArtistName:
         replacementMap.get(`${track.playlist_id}::${track.track_id}`)?.[0]?.referenceArtistName ??
         null,

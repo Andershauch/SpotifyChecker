@@ -144,6 +144,12 @@ class CancelledCheckError extends Error {
   }
 }
 
+function countUniqueUnavailableTracks(unavailableTracks: TrackAvailability[]) {
+  return new Set(
+    unavailableTracks.map((track) => `${track.playlistId}::${track.trackId}`),
+  ).size;
+}
+
 export async function runDailyCheck(
   triggerSource: CheckTriggerSource = "manual",
 ): Promise<CheckSummary> {
@@ -335,7 +341,7 @@ export async function executeCheckJob(
         checkedTracks,
         checkedPlaylists,
         skippedPlaylists,
-        unavailableCount: unavailableTracks.length,
+        unavailableCount: countUniqueUnavailableTracks(unavailableTracks),
         payload: {
           deferredPlaylists,
           scanBudget,
@@ -375,7 +381,7 @@ export async function executeCheckJob(
           checkedTracks,
           checkedPlaylists,
           skippedPlaylists,
-          unavailableCount: unavailableTracks.length,
+          unavailableCount: countUniqueUnavailableTracks(unavailableTracks),
           payload: {
             deferredPlaylists,
             scanBudget,
@@ -396,7 +402,7 @@ export async function executeCheckJob(
           checkedTracks,
           checkedPlaylists,
           skippedPlaylists,
-          unavailableCount: unavailableTracks.length,
+          unavailableCount: countUniqueUnavailableTracks(unavailableTracks),
           payload: {
             deferredPlaylists,
             scanBudget,
@@ -428,7 +434,7 @@ export async function executeCheckJob(
       });
 
       const baseCheckedTracks = checkedTracks;
-      const baseUnavailableCount = unavailableTracks.length;
+      const baseUnavailableCount = countUniqueUnavailableTracks(unavailableTracks);
       let lastPlaylistProgressSyncAt = 0;
 
       executionContext.onTrackScanProgress = async (progress) => {
@@ -480,7 +486,7 @@ export async function executeCheckJob(
         snapshotId: playlist.snapshotId,
         trackTotal: playlist.trackTotal,
         lastAvailabilityScanAt: new Date().toISOString(),
-        currentUnavailableCount: result.unavailable.length,
+        currentUnavailableCount: countUniqueUnavailableTracks(result.unavailable),
         lastRunJobId: jobId,
       };
       checkpointMap.set(playlist.id, {
@@ -501,7 +507,7 @@ export async function executeCheckJob(
         checkedTracks,
         checkedPlaylists,
         skippedPlaylists,
-        unavailableCount: unavailableTracks.length,
+        unavailableCount: countUniqueUnavailableTracks(unavailableTracks),
         payload: {
           deferredPlaylists,
           scanBudget,
@@ -539,7 +545,7 @@ export async function executeCheckJob(
     const summary: CheckSummary = {
       status: "ok",
       checkedTracks,
-      unavailableCount: unavailableTracks.length,
+      unavailableCount: countUniqueUnavailableTracks(unavailableTracks),
       newUnavailableCount: newUnavailableTracks.length,
       checkedPlaylists,
       skippedPlaylists,
@@ -552,7 +558,7 @@ export async function executeCheckJob(
       checkedTracks,
       checkedPlaylists,
       skippedPlaylists,
-      unavailableCount: unavailableTracks.length,
+      unavailableCount: countUniqueUnavailableTracks(unavailableTracks),
       newUnavailableCount: newUnavailableTracks.length,
       payload: {
         deferredPlaylists,
@@ -584,7 +590,7 @@ export async function executeCheckJob(
       checkedPlaylists,
       skippedPlaylists,
       deferredPlaylists,
-      unavailableTracks.length,
+      countUniqueUnavailableTracks(unavailableTracks),
     );
 
     await updateCheckJob(jobId, {
@@ -592,7 +598,7 @@ export async function executeCheckJob(
       checkedTracks,
       checkedPlaylists,
       skippedPlaylists,
-      unavailableCount: unavailableTracks.length,
+      unavailableCount: countUniqueUnavailableTracks(unavailableTracks),
       errorMessage: summary.errorMessage,
       payload: {
         deferredPlaylists,
@@ -857,6 +863,9 @@ async function persistUnavailableTracks(
     playlist_id: track.playlistId,
     playlist_name: track.playlistName,
     track_name: track.trackName,
+    primary_artist_name: track.artistNames[0] ?? null,
+    primary_estimated_bpm: null,
+    primary_estimated_bpm_source: null,
     duration_ms: track.durationMs,
   }));
 
@@ -869,6 +878,9 @@ async function persistUnavailableTracks(
           playlist_id TEXT,
           playlist_name TEXT,
           track_name TEXT,
+          primary_artist_name TEXT,
+          primary_estimated_bpm INTEGER,
+          primary_estimated_bpm_source TEXT,
           duration_ms INTEGER
         )
       )
@@ -877,6 +889,8 @@ async function persistUnavailableTracks(
         incoming.playlist_id,
         incoming.playlist_name,
         incoming.track_name,
+        incoming.primary_artist_name,
+        incoming.primary_estimated_bpm,
         incoming.duration_ms
       FROM incoming
       LEFT JOIN unavailable_tracks existing
@@ -897,6 +911,9 @@ async function persistUnavailableTracks(
           playlist_id TEXT,
           playlist_name TEXT,
           track_name TEXT,
+          primary_artist_name TEXT,
+          primary_estimated_bpm INTEGER,
+          primary_estimated_bpm_source TEXT,
           duration_ms INTEGER
         )
       )
@@ -924,6 +941,9 @@ async function persistUnavailableTracks(
               playlist_id TEXT,
               playlist_name TEXT,
               track_name TEXT,
+              primary_artist_name TEXT,
+              primary_estimated_bpm INTEGER,
+              primary_estimated_bpm_source TEXT,
               duration_ms INTEGER
             )
           )
@@ -932,6 +952,9 @@ async function persistUnavailableTracks(
             playlist_id,
             playlist_name,
             track_name,
+            primary_artist_name,
+            primary_estimated_bpm,
+            primary_estimated_bpm_source,
             duration_ms,
             currently_unavailable,
             first_seen_at,
@@ -942,6 +965,9 @@ async function persistUnavailableTracks(
             playlist_id,
             playlist_name,
             track_name,
+            primary_artist_name,
+            primary_estimated_bpm,
+            primary_estimated_bpm_source,
             duration_ms,
             TRUE,
             NOW(),
@@ -951,6 +977,9 @@ async function persistUnavailableTracks(
           DO UPDATE SET
             playlist_name = EXCLUDED.playlist_name,
             track_name = EXCLUDED.track_name,
+            primary_artist_name = EXCLUDED.primary_artist_name,
+            primary_estimated_bpm = EXCLUDED.primary_estimated_bpm,
+            primary_estimated_bpm_source = EXCLUDED.primary_estimated_bpm_source,
             duration_ms = EXCLUDED.duration_ms,
             currently_unavailable = TRUE,
             last_seen_at = NOW()
@@ -962,12 +991,17 @@ async function persistUnavailableTracks(
     playlist_id: string;
     playlist_name: string;
     track_name: string;
+    primary_artist_name: string | null;
+    primary_estimated_bpm: number | null;
+    primary_estimated_bpm_source: string | null;
     duration_ms: number | null;
   }>).map((row) => ({
     trackId: row.track_id,
     playlistId: row.playlist_id,
     playlistName: row.playlist_name,
     trackName: row.track_name,
+    artistNames: row.primary_artist_name ? [row.primary_artist_name] : [],
+    estimatedBpm: null,
     durationMs: row.duration_ms,
     unavailableReason: "market",
   }));

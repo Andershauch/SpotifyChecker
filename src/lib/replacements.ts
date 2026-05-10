@@ -26,7 +26,7 @@ const replacementResponseSchema = z.object({
 export type TrackReplacementSuggestion = z.infer<typeof suggestionSchema>;
 
 const OPENAI_SUGGESTION_TIMEOUT_MS = 55_000;
-const OPENAI_DURATION_TOLERANCE_MS = 1_000;
+const OPENAI_DURATION_TOLERANCE_MS = 5_000;
 
 export async function generateAndStoreTrackReplacements(input: {
   playlistId: string;
@@ -64,7 +64,8 @@ export async function generateAndStoreTrackReplacements(input: {
     await upsertTrackReplacement({
       playlistId: input.playlistId,
       unavailableTrackId: input.trackId,
-      referenceArtistName: null,
+      referenceArtistName:
+        trackContext.artistNames[0] ?? unavailableTrack.primary_artist_name ?? null,
       referenceEstimatedBpm: null,
       sourceModel: getEnv().OPENAI_SUGGESTION_MODEL,
       suggestionIndex: 0,
@@ -81,7 +82,8 @@ export async function generateAndStoreTrackReplacements(input: {
   } catch (error) {
     if (directTitleSuggestion) {
       return {
-        referenceArtistName: null,
+        referenceArtistName:
+          trackContext.artistNames[0] ?? unavailableTrack.primary_artist_name ?? null,
         referenceEstimatedBpm: null,
         suggestions: [directTitleSuggestion],
       };
@@ -172,7 +174,7 @@ async function generateTrackReplacementSuggestions(input: {
       numberOfSuggestions: 2,
       preferSpotifyLinks: true,
       keepSimilarDuration: true,
-      durationToleranceMs: 1_000,
+      durationToleranceMs: 5_000,
       includeEstimatedBpm: true,
       avoidExactSameTrack: true,
     },
@@ -192,7 +194,7 @@ async function generateTrackReplacementSuggestions(input: {
           "Du hjælper med musik-curation. Når du får et Spotify-track, skal du identificere titel, kunstner, " +
           "version/remix/edit hvis det fremgår, ca. længde og et kvalificeret BPM-estimat. " +
           "Returnér derefter præcis 2 konkrete alternativer, som matcher samme stil og samme tempo/BPM. " +
-          "De 2 alternativer skal være inden for plus/minus 1 sekund af originalens længde, hvis originalens længde er kendt. " +
+          "De 2 alternativer skal være inden for plus/minus 5 sekunder af originalens længde, hvis originalens længde er kendt. " +
           "Hvis du ikke kan finde præcis 2 forslag inden for den tolerance, må du ikke bruge forslag med større tidsafvigelse. " +
           "Ingen begrundelser, ingen ekstra forklaring, kun struktureret data. " +
           "Returnér kun forslag, som sandsynligvis findes på Spotify, og undgå det originale track.",
@@ -309,7 +311,7 @@ function enforceOpenAiDurationTolerance(
 
   if (suggestionsWithinTolerance.length !== 2) {
     throw new Error(
-      "OpenAI fandt ikke 2 alternativer inden for plus/minus 1 sekund af originalens længde. Prøv igen, eller brug et direkte Spotify titelmatch hvis det findes.",
+      "OpenAI fandt ikke 2 alternativer inden for plus/minus 5 sekunder af originalens længde. Prøv igen, eller brug et direkte Spotify titelmatch hvis det findes.",
     );
   }
 

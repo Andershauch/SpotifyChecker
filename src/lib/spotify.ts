@@ -39,6 +39,9 @@ type TrackEntry = {
   item: {
     id: string | null;
     name: string;
+    artists?: Array<{
+      name?: string;
+    }>;
     duration_ms?: number;
     is_playable?: boolean;
     type?: string;
@@ -76,6 +79,33 @@ type SpotifySearchResponse = {
   };
 };
 
+type SpotifyTracksResponse = {
+  tracks?: Array<
+    | {
+        id: string;
+        artists?: Array<{
+          name?: string;
+        }>;
+      }
+    | null
+  >;
+};
+
+type SpotifyAudioFeaturesResponse = {
+  audio_features?: Array<
+    | {
+        id: string;
+        tempo?: number | null;
+      }
+    | null
+  >;
+};
+
+type SpotifyAudioFeature = {
+  id: string;
+  tempo?: number | null;
+};
+
 type CurrentSpotifyUserProfile = {
   id: string;
   display_name?: string | null;
@@ -101,6 +131,8 @@ export type TrackAvailability = {
   playlistName: string;
   trackId: string;
   trackName: string;
+  artistNames: string[];
+  estimatedBpm: number | null;
   durationMs: number | null;
   unavailableReason: string;
 };
@@ -302,6 +334,10 @@ export async function fetchUnavailableTracksForPlaylist(
         playlistName,
         trackId: track.id,
         trackName: track.name,
+        artistNames: (track.artists ?? [])
+          .map((artist) => artist.name?.trim())
+          .filter((value): value is string => Boolean(value)),
+        estimatedBpm: null,
         durationMs: typeof track.duration_ms === "number" ? track.duration_ms : null,
         unavailableReason: track.restrictions?.reason ?? "not_playable",
       });
@@ -383,6 +419,186 @@ export async function searchTrackOnSpotify(input: {
   }
 
   return null;
+}
+
+export async function fetchTrackPrimaryArtists(
+  trackIds: string[],
+  context?: SpotifyExecutionContext,
+) {
+  const uniqueTrackIds = [...new Set(trackIds.filter(Boolean))].slice(0, 50);
+  if (uniqueTrackIds.length === 0) {
+    return new Map<string, string>();
+  }
+
+  const artistMap = new Map<string, string>();
+  const accessToken = await getAccessToken();
+  await collectTrackPrimaryArtists(uniqueTrackIds, accessToken, artistMap, context);
+  return artistMap;
+}
+
+export async function fetchTrackEstimatedBpms(
+  trackIds: string[],
+  context?: SpotifyExecutionContext,
+) {
+  const uniqueTrackIds = [...new Set(trackIds.filter(Boolean))];
+  if (uniqueTrackIds.length === 0) {
+    return new Map<string, number>();
+  }
+
+  const bpmMap = new Map<string, number>();
+  const accessToken = await getAccessToken();
+  for (let index = 0; index < uniqueTrackIds.length; index += 100) {
+    await collectTrackEstimatedBpms(
+      uniqueTrackIds.slice(index, index + 100),
+      accessToken,
+      bpmMap,
+      context,
+    );
+  }
+  return bpmMap;
+}
+
+async function collectTrackPrimaryArtists(
+  trackIds: string[],
+  accessToken: string,
+  artistMap: Map<string, string>,
+  context?: SpotifyExecutionContext,
+): Promise<void> {
+  if (trackIds.length === 0) {
+    return;
+  }
+
+  try {
+    const response = await spotifyGet<SpotifyTracksResponse>(
+      `https://api.spotify.com/v1/tracks?ids=${encodeURIComponent(trackIds.join(","))}` +
+        `&market=${getEnv().SPOTIFY_MARKET}`,
+      accessToken,
+      context,
+    );
+
+    for (const track of response.tracks ?? []) {
+      const primaryArtistName = track?.artists?.[0]?.name?.trim();
+      if (!track?.id || !primaryArtistName) {
+        continue;
+      }
+
+      artistMap.set(track.id, primaryArtistName);
+    }
+  } catch (error) {
+    const status = getStatusFromError(error);
+    if (status !== 403) {
+      throw error;
+    }
+
+    if (trackIds.length === 1) {
+      await collectSingleTrackPrimaryArtist(trackIds[0], accessToken, artistMap, context);
+      return;
+    }
+
+    const midpoint = Math.ceil(trackIds.length / 2);
+    await collectTrackPrimaryArtists(trackIds.slice(0, midpoint), accessToken, artistMap, context);
+    await collectTrackPrimaryArtists(trackIds.slice(midpoint), accessToken, artistMap, context);
+  }
+}
+
+async function collectTrackEstimatedBpms(
+  trackIds: string[],
+  accessToken: string,
+  bpmMap: Map<string, number>,
+  context?: SpotifyExecutionContext,
+): Promise<void> {
+  if (trackIds.length === 0) {
+    return;
+  }
+
+  try {
+    const response = await spotifyGet<SpotifyAudioFeaturesResponse>(
+      `https://api.spotify.com/v1/audio-features?ids=${encodeURIComponent(trackIds.join(","))}`,
+      accessToken,
+      context,
+    );
+
+    for (const track of response.audio_features ?? []) {
+      const normalizedTempo = normalizeSpotifyTempo(track?.tempo);
+      if (!track?.id || normalizedTempo === null) {
+        continue;
+      }
+
+      bpmMap.set(track.id, normalizedTempo);
+    }
+  } catch (error) {
+    const status = getStatusFromError(error);
+    if (status !== 403) {
+      throw error;
+    }
+
+    if (trackIds.length === 1) {
+      await collectSingleTrackEstimatedBpm(trackIds[0], accessToken, bpmMap, context);
+      return;
+    }
+
+    const midpoint = Math.ceil(trackIds.length / 2);
+    await collectTrackEstimatedBpms(trackIds.slice(0, midpoint), accessToken, bpmMap, context);
+    await collectTrackEstimatedBpms(trackIds.slice(midpoint), accessToken, bpmMap, context);
+  }
+}
+
+async function collectSingleTrackEstimatedBpm(
+  trackId: string,
+  accessToken: string,
+  bpmMap: Map<string, number>,
+  context?: SpotifyExecutionContext,
+) {
+  try {
+    const track = await spotifyGet<SpotifyAudioFeature>(
+      `https://api.spotify.com/v1/audio-features/${trackId}`,
+      accessToken,
+      context,
+    );
+    const normalizedTempo = normalizeSpotifyTempo(track.tempo);
+    if (normalizedTempo !== null) {
+      bpmMap.set(track.id, normalizedTempo);
+    }
+  } catch (error) {
+    console.warn(
+      `[Spotify] Springer BPM-hentning over for track ${trackId} efter fejl på single-track fallback: ${
+        error instanceof Error ? error.message : "ukendt fejl"
+      }`,
+    );
+  }
+}
+
+function normalizeSpotifyTempo(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+
+  return Math.round(value);
+}
+
+async function collectSingleTrackPrimaryArtist(
+  trackId: string,
+  accessToken: string,
+  artistMap: Map<string, string>,
+  context?: SpotifyExecutionContext,
+) {
+  try {
+    const track = await spotifyGet<TrackDetails>(
+      `https://api.spotify.com/v1/tracks/${trackId}?market=${getEnv().SPOTIFY_MARKET}`,
+      accessToken,
+      context,
+    );
+    const primaryArtistName = track.artists?.[0]?.name?.trim();
+    if (primaryArtistName) {
+      artistMap.set(track.id, primaryArtistName);
+    }
+  } catch (error) {
+    console.warn(
+      `[Spotify] Springer artist-backfill over for track ${trackId} efter fejl på single-track fallback: ${
+        error instanceof Error ? error.message : "ukendt fejl"
+      }`,
+    );
+  }
 }
 
 async function getRequiredSpotifySession() {

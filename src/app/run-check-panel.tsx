@@ -19,6 +19,15 @@ type SmokeCheckResponse = {
   errorMessage: string | null;
 };
 
+type ArtistBackfillResponse = {
+  updatedFromReplacements: number;
+  spotifyBatchSize: number;
+  updatedFromSpotify: number;
+  remainingMissingArtists: number;
+  skippedSpotifyDueToCooldown: boolean;
+  message: string;
+};
+
 type JobSnapshot = {
   id: string;
   status: string;
@@ -76,6 +85,7 @@ type UnavailablePlaylistGroup = {
     firstSeenAt: string;
     lastSeenAt: string;
     currentlyUnavailable: boolean;
+    primaryArtistName: string | null;
     referenceArtistName: string | null;
     referenceEstimatedBpm: number | null;
     suggestions: Array<{
@@ -120,6 +130,7 @@ export function RunCheckPanel() {
   const [isStartingSample, setIsStartingSample] = useState(false);
   const [isSmoking, setIsSmoking] = useState(false);
   const [isResettingCheckpoints, setIsResettingCheckpoints] = useState(false);
+  const [isBackfillingArtists, setIsBackfillingArtists] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [isUnlocking, setIsUnlocking] = useState(false);
   const [unavailableMessage, setUnavailableMessage] = useState<string | null>(null);
@@ -303,7 +314,6 @@ export function RunCheckPanel() {
   const currentUnavailableTracks =
     unavailableData?.currentTracks ??
     unavailableTrackRows.filter(({ track }) => track.currentlyUnavailable).length;
-  const latestRunUnavailableTracks = activeJob?.unavailableCount ?? currentUnavailableTracks;
   const canStartScan =
     Boolean(spotifyConnection?.connected) && !isRunning && !isStarting && !activeCooldown;
 
@@ -456,6 +466,31 @@ export function RunCheckPanel() {
       router.refresh();
     } finally {
       setIsResettingCheckpoints(false);
+    }
+  }
+
+  async function handleBackfillArtists() {
+    setMessage(null);
+    setIsBackfillingArtists(true);
+
+    try {
+      const { response, payload } = await requestApi<ArtistBackfillResponse>(
+        "/api/check/backfill-artists",
+        {
+          method: "POST",
+        },
+      );
+
+      if (!response.ok) {
+        setMessage(getApiError(payload, response.status, "Kunne ikke backfille kunstnernavne"));
+        return;
+      }
+
+      const result = payload as ArtistBackfillResponse;
+      setMessage(result.message);
+      await refreshUnavailableNow();
+    } finally {
+      setIsBackfillingArtists(false);
     }
   }
 
@@ -665,13 +700,13 @@ export function RunCheckPanel() {
             )}
             <article
               className={
-                latestRunUnavailableTracks > 0
+                currentUnavailableTracks > 0
                   ? "app-status-card app-status-alert"
                   : "app-status-card"
               }
             >
               <span>Aktuelle fund</span>
-              <strong>{latestRunUnavailableTracks}</strong>
+              <strong>{currentUnavailableTracks}</strong>
             </article>
           </div>
         </div>
@@ -913,6 +948,14 @@ export function RunCheckPanel() {
               Ingen aktuelle utilgængelige tracks er registreret lige nu.
             </p>
           ) : null}
+          {!unavailableMessage &&
+          unavailablePlaylists.length > 0 &&
+          currentUnavailableTracks === 0 ? (
+            <p className="helper-text">
+              Der er ingen aktuelle fund lige nu. Listen nedenfor viser kun historik fra tidligere
+              scans.
+            </p>
+          ) : null}
 
           <div className="playlist-findings">
             {unavailablePlaylists.map((playlist, index) => (
@@ -938,8 +981,7 @@ export function RunCheckPanel() {
                         </a>
                       </strong>
                       <small>
-                        {playlist.trackCount} utilgængelige track
-                        {playlist.trackCount === 1 ? "" : "s"}
+                        {formatPlaylistTrackSummary(playlist)}
                       </small>
                     </span>
                     <span className="playlist-finding-meta">
@@ -977,7 +1019,9 @@ export function RunCheckPanel() {
                         >
                           {track.currentlyUnavailable ? "Aktuel" : "Historisk"}
                         </span>{" "}
-                        Senest set {formatDateTime(track.lastSeenAt)}
+                        Senest set {formatDateTime(track.lastSeenAt)}{" "}
+                        {" • "}
+                        {track.primaryArtistName ?? "ukendt kunstner"}
                       </small>
 
                       <div className="track-actions">
@@ -1003,12 +1047,12 @@ export function RunCheckPanel() {
                         <div className="suggestion-list">
                           <p className="suggestion-intro">
                             Alternativer til &quot;{track.trackName}&quot; af{" "}
-                            {track.referenceArtistName ?? "ukendt kunstner"} —{" "}
+                            {track.referenceArtistName ?? track.primaryArtistName ?? "ukendt kunstner"} —{" "}
                             {track.durationMs ? formatDuration(track.durationMs) : "ukendt længde"}
                             {" / "}
                             {track.referenceEstimatedBpm
-                              ? `${track.referenceEstimatedBpm} BPM`
-                              : "ukendt BPM"}
+                              ? `estimeret ${track.referenceEstimatedBpm} BPM`
+                              : "ukendt estimeret BPM"}
                             :
                           </p>
 
@@ -1039,8 +1083,8 @@ export function RunCheckPanel() {
                                   : "ukendt længde"}
                                 {" / "}
                                 {suggestion.estimatedBpm
-                                  ? `${suggestion.estimatedBpm} BPM`
-                                  : "ukendt BPM"}
+                                  ? `estimeret ${suggestion.estimatedBpm} BPM`
+                                  : "ukendt estimeret BPM"}
                               </p>
                             </article>
                           ))}
@@ -1164,6 +1208,21 @@ export function RunCheckPanel() {
                   type="button"
                   className="secondary-button"
                   onClick={() => {
+                    void handleBackfillArtists();
+                  }}
+                  disabled={
+                    isRunning ||
+                    isBackfillingArtists ||
+                    !spotifyConnection?.connected
+                  }
+                >
+                  {isBackfillingArtists ? "Backfiller..." : "Backfill kunstnere"}
+                </button>
+
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
                     void handleResetCheckpoints();
                   }}
                   disabled={isRunning || isResettingCheckpoints}
@@ -1199,6 +1258,10 @@ export function RunCheckPanel() {
                   Nulstil checkpoints bør kun bruges, når vi aktivt vil gennemtvinge en tungere
                   genopbygning. Normal drift bør lade checkpoint-modellen fordele Spotify-kald over
                   flere små kørsler.
+                </p>
+                <p className="helper-text">
+                  Kunstner-backfill bruger først eksisterende data og derefter højst en lille
+                  Spotify-batch for fund, der stadig mangler kunstnernavn.
                 </p>
                 {runStatus?.lock ? (
                   <p className="helper-text">
@@ -1348,6 +1411,28 @@ function getSmokeSummaryMessage(result: SmokeCheckResponse) {
   }
 
   return result.errorMessage ?? "Spotify smoke test fejlede.";
+}
+
+function formatPlaylistTrackSummary(playlist: UnavailablePlaylistGroup) {
+  const currentCount = playlist.tracks.filter((track) => track.currentlyUnavailable).length;
+  const historicalCount = playlist.trackCount - currentCount;
+  const segments = [];
+
+  if (currentCount > 0) {
+    segments.push(
+      `${currentCount} aktuelt utilgængelige track${currentCount === 1 ? "" : "s"}`,
+    );
+  }
+
+  if (historicalCount > 0) {
+    segments.push(`${historicalCount} historiske`);
+  }
+
+  if (segments.length === 0) {
+    return "Ingen registrerede fund";
+  }
+
+  return segments.join(" • ");
 }
 
 function formatDateTime(value: string) {
