@@ -46,6 +46,15 @@ export type MonitoredPlaylistRow = {
   updated_at: string;
 };
 
+export type PlaylistTrackStateRow = {
+  playlist_id: string;
+  playlist_name: string;
+  track_id: string;
+  track_name: string;
+  duration_ms: number | null;
+  last_seen_at: string;
+};
+
 export type CurrentUnavailableTrackRow = {
   playlist_id: string;
   playlist_name: string;
@@ -299,6 +308,23 @@ export async function ensureSchema() {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+    `;
+
+    await sql`
+      CREATE TABLE IF NOT EXISTS playlist_track_state (
+        track_id TEXT NOT NULL,
+        playlist_id TEXT NOT NULL,
+        playlist_name TEXT NOT NULL,
+        track_name TEXT NOT NULL,
+        duration_ms INTEGER,
+        last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (track_id, playlist_id)
+      );
+    `;
+
+    await sql`
+      ALTER TABLE playlist_track_state
+      ADD COLUMN IF NOT EXISTS duration_ms INTEGER
     `;
 
     await sql`

@@ -137,6 +137,14 @@ export type TrackAvailability = {
   unavailableReason: string;
 };
 
+export type PlaylistTrackSnapshot = {
+  playlistId: string;
+  playlistName: string;
+  trackId: string;
+  trackName: string;
+  durationMs: number | null;
+};
+
 export type TrackSuggestionContext = {
   trackId: string;
   trackName: string;
@@ -294,7 +302,11 @@ export async function fetchUnavailableTracksForPlaylist(
   playlistName: string,
   accessToken: string,
   context?: SpotifyExecutionContext,
-): Promise<{ unavailable: TrackAvailability[]; checked: number }> {
+): Promise<{
+  unavailable: TrackAvailability[];
+  checked: number;
+  tracks: PlaylistTrackSnapshot[];
+}> {
   // Spotify's nested `fields` filtering for playlist items has proven too
   // aggressive here and can collapse real items into `{}` objects. We therefore
   // fetch the normal item payload and only keep the minimal fields in memory.
@@ -303,6 +315,7 @@ export async function fetchUnavailableTracksForPlaylist(
     `?limit=100&market=${getEnv().SPOTIFY_MARKET}`;
 
   const unavailable: TrackAvailability[] = [];
+  const tracks: PlaylistTrackSnapshot[] = [];
   let checked = 0;
 
   while (url) {
@@ -321,6 +334,13 @@ export async function fetchUnavailableTracksForPlaylist(
       }
 
       checked += 1;
+      tracks.push({
+        playlistId,
+        playlistName,
+        trackId: track.id,
+        trackName: track.name,
+        durationMs: typeof track.duration_ms === "number" ? track.duration_ms : null,
+      });
 
       const isUnavailableByPlayableFlag = track.is_playable === false;
       const isUnavailableByRestriction = track.restrictions?.reason === "market";
@@ -351,7 +371,7 @@ export async function fetchUnavailableTracksForPlaylist(
     url = page.next;
   }
 
-  return { unavailable, checked };
+  return { unavailable, checked, tracks };
 }
 
 export async function fetchTrackSuggestionContext(

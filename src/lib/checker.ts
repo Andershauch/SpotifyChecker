@@ -20,12 +20,16 @@ import {
   type CheckJobRow,
   type PlaylistCheckpointRow,
 } from "@/lib/db";
-import { sendUnavailableTracksAlert } from "@/lib/mailer";
+import {
+  sendPlaylistChangesAlert,
+  type DurationChangeAlert,
+} from "@/lib/mailer";
 import {
   fetchOwnPublicPlaylists,
   fetchUnavailableTracksForPlaylist,
   getSpotifyConnectionStatus,
   getSpotifyCooldownFromError,
+  type PlaylistTrackSnapshot,
   type PlaylistSummary,
   type SpotifyExecutionContext,
   type TrackAvailability,
@@ -37,6 +41,7 @@ const CHECKPOINT_FLUSH_BATCH_SIZE = 25;
 const DEFAULT_PLAYLIST_SCAN_BUDGET = 100;
 const STALE_RECHECK_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 const UNAVAILABLE_RECHECK_INTERVAL_MS = 2 * 24 * 60 * 60 * 1000;
+const DURATION_CHANGE_THRESHOLD_MS = 250;
 
 export type CheckTriggerSource = "manual" | "cron";
 
@@ -247,6 +252,7 @@ export async function executeCheckJob(
   let deferredPlaylists = 0;
   const scannedPlaylistIds = new Set<string>();
   const unavailableTracks: TrackAvailability[] = [];
+  const scannedTracks: PlaylistTrackSnapshot[] = [];
   const pendingCheckpointWrites: Array<{
     playlistId: string;
     playlistName: string;
@@ -478,6 +484,7 @@ export async function executeCheckJob(
       checkedPlaylists += 1;
       scannedPlaylistIds.add(playlist.id);
       unavailableTracks.push(...result.unavailable);
+      scannedTracks.push(...result.tracks);
       currentPlaylistContext = null;
 
       const checkpointInput = {
@@ -538,8 +545,15 @@ export async function executeCheckJob(
       unavailableTracks,
       [...scannedPlaylistIds],
     );
+    const durationChanges = await persistPlaylistTrackStateAndDetectDurationChanges(
+      scannedTracks,
+      [...scannedPlaylistIds],
+    );
     await reconcilePlaylistCheckpointUnavailableCounts([...scannedPlaylistIds]);
-    await sendUnavailableTracksAlert(newUnavailableTracks);
+    await sendPlaylistChangesAlert({
+      newUnavailableTracks,
+      durationChanges,
+    });
     await clearSpotifyCooldownState();
 
     const summary: CheckSummary = {
@@ -1005,6 +1019,138 @@ async function persistUnavailableTracks(
     durationMs: row.duration_ms,
     unavailableReason: "market",
   }));
+}
+
+async function persistPlaylistTrackStateAndDetectDurationChanges(
+  scannedTracks: PlaylistTrackSnapshot[],
+  scannedPlaylistIds: string[],
+) {
+  if (scannedPlaylistIds.length === 0) {
+    return [];
+  }
+
+  const sql = getSql();
+  const scannedPlaylistPayload = JSON.stringify(scannedPlaylistIds);
+  const uniqueTracks = [
+    ...new Map(scannedTracks.map((track) => [`${track.playlistId}::${track.trackId}`, track])).values(),
+  ];
+  const payload = uniqueTracks.map((track) => ({
+    track_id: track.trackId,
+    playlist_id: track.playlistId,
+    playlist_name: track.playlistName,
+    track_name: track.trackName,
+    duration_ms: track.durationMs,
+  }));
+
+  const [durationChangeRows] = await sql.transaction([
+    payload.length === 0
+      ? sql`SELECT 1 WHERE FALSE`
+      : sql`
+          WITH incoming AS (
+            SELECT *
+            FROM jsonb_to_recordset(${JSON.stringify(payload)}::jsonb) AS value(
+              track_id TEXT,
+              playlist_id TEXT,
+              playlist_name TEXT,
+              track_name TEXT,
+              duration_ms INTEGER
+            )
+          )
+          SELECT
+            incoming.playlist_id,
+            incoming.playlist_name,
+            incoming.track_id,
+            incoming.track_name,
+            existing.duration_ms AS previous_duration_ms,
+            incoming.duration_ms AS current_duration_ms
+          FROM incoming
+          INNER JOIN playlist_track_state AS existing
+            ON existing.track_id = incoming.track_id
+           AND existing.playlist_id = incoming.playlist_id
+          WHERE existing.duration_ms IS NOT NULL
+            AND incoming.duration_ms IS NOT NULL
+            AND ABS(existing.duration_ms - incoming.duration_ms) > ${DURATION_CHANGE_THRESHOLD_MS}
+        `,
+    sql`
+      WITH scanned_playlists AS (
+        SELECT value AS playlist_id
+        FROM jsonb_array_elements_text(${scannedPlaylistPayload}::jsonb) AS value
+      ),
+      incoming AS (
+        SELECT *
+        FROM jsonb_to_recordset(${JSON.stringify(payload)}::jsonb) AS value(
+          track_id TEXT,
+          playlist_id TEXT,
+          playlist_name TEXT,
+          track_name TEXT,
+          duration_ms INTEGER
+        )
+      )
+      DELETE FROM playlist_track_state AS target
+      WHERE target.playlist_id IN (
+        SELECT playlist_id
+        FROM scanned_playlists
+      )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM incoming
+          WHERE incoming.track_id = target.track_id
+            AND incoming.playlist_id = target.playlist_id
+        )
+    `,
+    payload.length === 0
+      ? sql`SELECT 1 WHERE FALSE`
+      : sql`
+          WITH incoming AS (
+            SELECT *
+            FROM jsonb_to_recordset(${JSON.stringify(payload)}::jsonb) AS value(
+              track_id TEXT,
+              playlist_id TEXT,
+              playlist_name TEXT,
+              track_name TEXT,
+              duration_ms INTEGER
+            )
+          )
+          INSERT INTO playlist_track_state (
+            track_id,
+            playlist_id,
+            playlist_name,
+            track_name,
+            duration_ms,
+            last_seen_at
+          )
+          SELECT
+            track_id,
+            playlist_id,
+            playlist_name,
+            track_name,
+            duration_ms,
+            NOW()
+          FROM incoming
+          ON CONFLICT (track_id, playlist_id)
+          DO UPDATE SET
+            playlist_name = EXCLUDED.playlist_name,
+            track_name = EXCLUDED.track_name,
+            duration_ms = EXCLUDED.duration_ms,
+            last_seen_at = NOW()
+        `,
+  ]);
+
+  return (durationChangeRows as Array<{
+    playlist_id: string;
+    playlist_name: string;
+    track_id: string;
+    track_name: string;
+    previous_duration_ms: number;
+    current_duration_ms: number;
+  }>).map((row) => ({
+    playlistId: row.playlist_id,
+    playlistName: row.playlist_name,
+    trackId: row.track_id,
+    trackName: row.track_name,
+    previousDurationMs: row.previous_duration_ms,
+    currentDurationMs: row.current_duration_ms,
+  } satisfies DurationChangeAlert));
 }
 
 async function saveRun(summary: CheckSummary) {
