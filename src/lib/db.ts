@@ -132,12 +132,14 @@ export type RapidApiBpmDailyUsageState = {
   updatedAt: string;
 };
 
+/** Returns a Neon SQL client bound to DATABASE_URL. */
 export function getSql() {
   return neon(getEnv().DATABASE_URL);
 }
 
 let schemaReadyPromise: Promise<void> | null = null;
 
+/** Creates all tables and runs any pending ADD COLUMN migrations. Safe to call on every request — result is cached per process. */
 export async function ensureSchema() {
   if (schemaReadyPromise) {
     return schemaReadyPromise;
@@ -344,6 +346,7 @@ export async function ensureSchema() {
   }
 }
 
+/** Inserts a new check job in 'queued' status and returns the created row. */
 export async function createCheckJob(triggerSource: string) {
   const sql = getSql();
   const jobId = crypto.randomUUID();
@@ -357,6 +360,7 @@ export async function createCheckJob(triggerSource: string) {
   return rows[0];
 }
 
+/** Returns a single check job by ID, or null if not found. */
 export async function getCheckJob(jobId: string) {
   const sql = getSql();
   const rows = (await sql`
@@ -369,6 +373,7 @@ export async function getCheckJob(jobId: string) {
   return rows[0] ?? null;
 }
 
+/** Returns the most recently requested check job, or null if none exist. */
 export async function getLatestCheckJob() {
   const sql = getSql();
   const rows = (await sql`
@@ -381,6 +386,7 @@ export async function getLatestCheckJob() {
   return rows[0] ?? null;
 }
 
+/** Returns all tracks currently marked unavailable, sorted by playlist then track name. */
 export async function getCurrentUnavailableTracks() {
   await ensureSchema();
   const sql = getSql();
@@ -405,6 +411,7 @@ export async function getCurrentUnavailableTracks() {
   return rows;
 }
 
+/** Returns all unavailable tracks ever seen, including historical records where currently_unavailable is false. */
 export async function getKnownUnavailableTracks() {
   await ensureSchema();
   const sql = getSql();
@@ -428,6 +435,7 @@ export async function getKnownUnavailableTracks() {
   return rows;
 }
 
+/** Returns a single unavailable track by its composite (playlistId, trackId) key, or null if not found. */
 export async function getUnavailableTrack(
   playlistId: string,
   trackId: string,
@@ -456,6 +464,7 @@ export async function getUnavailableTrack(
   return rows[0] ?? null;
 }
 
+/** Returns all AI-generated replacement suggestions, ordered by playlist, track, then suggestion index. */
 export async function getTrackReplacementsForCurrentUnavailableTracks() {
   const sql = getSql();
   const rows = (await sql`
@@ -481,6 +490,7 @@ export async function getTrackReplacementsForCurrentUnavailableTracks() {
   return rows;
 }
 
+/** Copies reference_artist_name from track_replacements into unavailable_tracks where primary_artist_name is missing. Returns the number of rows updated. */
 export async function backfillUnavailableTrackArtistsFromReplacements() {
   const sql = getSql();
   const rows = await sql`
@@ -506,6 +516,7 @@ export async function backfillUnavailableTrackArtistsFromReplacements() {
   return rows.length;
 }
 
+/** Returns currently unavailable tracks that have no primary artist name, newest first, up to `limit` rows. */
 export async function getCurrentUnavailableTracksMissingPrimaryArtist(limit: number) {
   const sql = getSql();
   const rows = (await sql`
@@ -522,6 +533,7 @@ export async function getCurrentUnavailableTracksMissingPrimaryArtist(limit: num
   return rows;
 }
 
+/** Bulk-updates primary_artist_name for tracks that currently have none. Returns the number of rows updated. */
 export async function updateUnavailableTrackPrimaryArtists(input: Array<{
   playlistId: string;
   trackId: string;
@@ -565,6 +577,7 @@ export async function updateUnavailableTrackPrimaryArtists(input: Array<{
   return rows.length;
 }
 
+/** Returns currently unavailable tracks that have no BPM estimate, newest first, up to `limit` rows. */
 export async function getCurrentUnavailableTracksMissingPrimaryEstimatedBpm(limit: number) {
   const sql = getSql();
   const rows = (await sql`
@@ -583,6 +596,7 @@ export async function getCurrentUnavailableTracksMissingPrimaryEstimatedBpm(limi
   return rows;
 }
 
+/** Bulk-updates primary_estimated_bpm for tracks that currently have none. Returns the number of rows updated. */
 export async function updateUnavailableTrackPrimaryEstimatedBpms(input: Array<{
   playlistId: string;
   trackId: string;
@@ -631,6 +645,7 @@ export async function updateUnavailableTrackPrimaryEstimatedBpms(input: Array<{
   return rows.length;
 }
 
+/** Atomically deletes all existing suggestions for a track and inserts the new batch in a single transaction. */
 export async function replaceTrackReplacements(input: {
   playlistId: string;
   unavailableTrackId: string;
@@ -734,6 +749,7 @@ export async function replaceTrackReplacements(input: {
   ]);
 }
 
+/** Inserts or updates a single replacement suggestion identified by (playlist_id, unavailable_track_id, suggestion_index). */
 export async function upsertTrackReplacement(input: {
   playlistId: string;
   unavailableTrackId: string;
@@ -800,6 +816,7 @@ export async function upsertTrackReplacement(input: {
   `;
 }
 
+/** Applies a partial update to a check job; only the fields provided in `patch` are changed. Returns the updated row or null. */
 export async function updateCheckJob(
   jobId: string,
   patch: {
@@ -840,6 +857,7 @@ export async function updateCheckJob(
   return rows[0] ?? null;
 }
 
+/** Tries to acquire the named exclusive lock for `ttlSeconds`. Returns the lock row if acquired, null if already held by another owner. */
 export async function acquireCheckRunLock(
   lockName: string,
   ttlSeconds: number,
@@ -871,6 +889,7 @@ export async function acquireCheckRunLock(
   return acquired ? rows[0] : null;
 }
 
+/** Renews the lock TTL by `ttlSeconds` from now. Returns null if the lock is no longer owned by `ownerId`. */
 export async function heartbeatCheckRunLock(
   lockName: string,
   ownerId: string,
@@ -888,6 +907,7 @@ export async function heartbeatCheckRunLock(
   return rows[0] ?? null;
 }
 
+/** Deletes the named lock only if the caller is still the owner. No-op if another owner holds the lock. */
 export async function releaseCheckRunLock(lockName: string, ownerId: string) {
   const sql = getSql();
   await sql`
@@ -897,6 +917,7 @@ export async function releaseCheckRunLock(lockName: string, ownerId: string) {
   `;
 }
 
+/** Returns the current lock row for `lockName`, or null if no lock exists. */
 export async function getCheckRunLock(lockName: string) {
   const sql = getSql();
   const rows = (await sql`
@@ -909,6 +930,7 @@ export async function getCheckRunLock(lockName: string) {
   return rows[0] ?? null;
 }
 
+/** Unconditionally deletes the named lock regardless of owner. Returns the deleted row, or null if it did not exist. */
 export async function forceReleaseCheckRunLock(lockName: string) {
   const sql = getSql();
   const rows = (await sql`
@@ -920,6 +942,7 @@ export async function forceReleaseCheckRunLock(lockName: string) {
   return rows[0] ?? null;
 }
 
+/** Returns the persisted scan checkpoint for a single playlist, or null if it has never been scanned. */
 export async function getPlaylistCheckpoint(playlistId: string) {
   const sql = getSql();
   const rows = (await sql`
@@ -940,6 +963,7 @@ export async function getPlaylistCheckpoint(playlistId: string) {
   return rows[0] ?? null;
 }
 
+/** Returns checkpoint rows for all supplied playlist IDs in a single query. Returns an empty array when the input list is empty. */
 export async function getPlaylistCheckpoints(playlistIds: string[]) {
   if (playlistIds.length === 0) {
     return [] as PlaylistCheckpointRow[];
@@ -963,6 +987,7 @@ export async function getPlaylistCheckpoints(playlistIds: string[]) {
   return rows;
 }
 
+/** Inserts or updates the checkpoint for one playlist. Null `lastAvailabilityScanAt` and `currentUnavailableCount` preserve the existing column values rather than overwriting them. */
 export async function upsertPlaylistCheckpoint(input: {
   playlistId: string;
   playlistName: string;
@@ -1023,6 +1048,7 @@ export async function upsertPlaylistCheckpoint(input: {
   return rows[0] ?? null;
 }
 
+/** Bulk-upserts checkpoints for multiple playlists in one SQL statement. Deduplicates by playlist ID before inserting. No-op when the array is empty. */
 export async function upsertPlaylistCheckpoints(
   inputs: Array<{
     playlistId: string;
@@ -1103,6 +1129,7 @@ export async function upsertPlaylistCheckpoints(
   `;
 }
 
+/** Recalculates `current_unavailable_count` on checkpoint rows by counting live `unavailable_tracks` records. Pass a list of IDs to update only those playlists, or omit to update all. */
 export async function reconcilePlaylistCheckpointUnavailableCounts(playlistIds?: string[]) {
   if (playlistIds && playlistIds.length === 0) {
     return;
@@ -1151,6 +1178,7 @@ export async function reconcilePlaylistCheckpointUnavailableCounts(playlistIds?:
   `;
 }
 
+/** Returns all rows from `monitored_playlists` where `is_active` is true, ordered by creation date. */
 export async function getActiveMonitoredPlaylistIds() {
   const sql = getSql();
   const rows = (await sql`
@@ -1163,6 +1191,7 @@ export async function getActiveMonitoredPlaylistIds() {
   return rows;
 }
 
+/** Deletes every row from `playlist_checkpoints` and returns the count of deleted rows. Used by the manual "reset checkpoints" action. */
 export async function clearPlaylistCheckpoints() {
   const sql = getSql();
   const rows = (await sql`
@@ -1178,6 +1207,7 @@ const SPOTIFY_AUTH_STATE_KEY = "spotify_oauth_state";
 const SPOTIFY_SESSION_STATE_KEY = "spotify_oauth_session";
 const RAPIDAPI_BPM_DAILY_USAGE_STATE_KEY = "rapidapi_bpm_daily_usage";
 
+/** Returns the active Spotify rate-limit cooldown window, or null if no cooldown is set. */
 export async function getSpotifyCooldownState() {
   const sql = getSql();
   const rows = (await sql`
@@ -1211,6 +1241,7 @@ export async function getSpotifyCooldownState() {
   } satisfies SpotifyCooldownState;
 }
 
+/** Persists or overwrites the Spotify cooldown window so all workers respect the same backoff deadline. */
 export async function setSpotifyCooldownState(input: SpotifyCooldownState) {
   const sql = getSql();
   await sql`
@@ -1227,6 +1258,7 @@ export async function setSpotifyCooldownState(input: SpotifyCooldownState) {
   `;
 }
 
+/** Removes the Spotify cooldown state, allowing API calls to resume immediately. */
 export async function clearSpotifyCooldownState() {
   const sql = getSql();
   await sql`
@@ -1235,6 +1267,7 @@ export async function clearSpotifyCooldownState() {
   `;
 }
 
+/** Returns the short-lived OAuth CSRF state token used to validate the Spotify callback, or null if the flow has not been started. */
 export async function getSpotifyAuthState() {
   const sql = getSql();
   const rows = (await sql`
@@ -1262,6 +1295,7 @@ export async function getSpotifyAuthState() {
   } satisfies SpotifyAuthState;
 }
 
+/** Stores or replaces the OAuth CSRF state token created at the start of the Spotify login flow. */
 export async function setSpotifyAuthState(input: SpotifyAuthState) {
   const sql = getSql();
   await sql`
@@ -1278,6 +1312,7 @@ export async function setSpotifyAuthState(input: SpotifyAuthState) {
   `;
 }
 
+/** Deletes the OAuth CSRF state token after the callback has been consumed. */
 export async function clearSpotifyAuthState() {
   const sql = getSql();
   await sql`
@@ -1286,6 +1321,7 @@ export async function clearSpotifyAuthState() {
   `;
 }
 
+/** Returns the stored Spotify OAuth session (access/refresh tokens, expiry, user identity), or null if the user is not connected. */
 export async function getSpotifySessionState() {
   const sql = getSql();
   const rows = (await sql`
@@ -1333,6 +1369,7 @@ export async function getSpotifySessionState() {
   } satisfies SpotifySessionState;
 }
 
+/** Persists or refreshes the Spotify OAuth session after a successful login or token refresh. */
 export async function setSpotifySessionState(input: SpotifySessionState) {
   const sql = getSql();
   await sql`
@@ -1349,6 +1386,7 @@ export async function setSpotifySessionState(input: SpotifySessionState) {
   `;
 }
 
+/** Removes the Spotify OAuth session, effectively disconnecting the account. */
 export async function clearSpotifySessionState() {
   const sql = getSql();
   await sql`
@@ -1357,6 +1395,7 @@ export async function clearSpotifySessionState() {
   `;
 }
 
+/** Returns today's RapidAPI BPM lookup usage counters, or null if no usage has been recorded today. */
 export async function getRapidApiBpmDailyUsageState() {
   const sql = getSql();
   const rows = (await sql`
@@ -1389,6 +1428,7 @@ export async function getRapidApiBpmDailyUsageState() {
   } satisfies RapidApiBpmDailyUsageState;
 }
 
+/** Stores or overwrites the RapidAPI BPM daily usage counters, used to respect the API's daily request quota. */
 export async function setRapidApiBpmDailyUsageState(input: RapidApiBpmDailyUsageState) {
   const sql = getSql();
   await sql`
@@ -1405,6 +1445,7 @@ export async function setRapidApiBpmDailyUsageState(input: RapidApiBpmDailyUsage
   `;
 }
 
+/** Atomically syncs the `monitored_playlists` table for the `spotify_oauth` source: upserts each supplied playlist as active, then deactivates any previously active ones that are no longer in the list. */
 export async function replaceOwnedPublicPlaylists(
   playlists: Array<{ playlistId: string; source?: string }>,
 ) {

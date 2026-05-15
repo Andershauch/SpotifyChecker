@@ -186,6 +186,7 @@ let inFlightAccessTokenPromise: Promise<string> | null = null;
 let nextSpotifyRequestAt = 0;
 let spotifyRequestThrottleQueue = Promise.resolve();
 
+/** Returns whether a Spotify account is connected and the basic session metadata (user ID, name, token expiry). */
 export async function getSpotifyConnectionStatus(): Promise<SpotifyConnectionStatus> {
   const session = await getSpotifySessionState();
 
@@ -198,6 +199,7 @@ export async function getSpotifyConnectionStatus(): Promise<SpotifyConnectionSta
   };
 }
 
+/** Generates a Spotify OAuth authorization URL and stores a CSRF state token in the database. Redirect the user to the returned URL to begin the login flow. */
 export async function createSpotifyAuthorizationUrl() {
   const state = crypto.randomUUID();
   await setSpotifyAuthState({
@@ -216,13 +218,14 @@ export async function createSpotifyAuthorizationUrl() {
   return `https://accounts.spotify.com/authorize?${params.toString()}`;
 }
 
+/** Validates the OAuth callback, exchanges the code for tokens, and persists the session. Throws if the CSRF state is invalid or the account belongs to a different Spotify user. */
 export async function completeSpotifyAuthorization(input: {
   code: string;
   state: string;
 }) {
   const savedState = await getSpotifyAuthState();
   if (!savedState || savedState.state !== input.state) {
-    throw new Error("Spotify OAuth state matcher ikke. Prøv at forbinde kontoen igen.");
+    throw new Error("Spotify OAuth state mismatch. Please try connecting the account again.");
   }
 
   const tokenResponse = await requestSpotifyToken({
@@ -237,13 +240,13 @@ export async function completeSpotifyAuthorization(input: {
   const refreshToken = tokenResponse.refresh_token;
 
   if (!refreshToken) {
-    throw new Error("Spotify returnerede ikke et refresh token.");
+    throw new Error("Spotify did not return a refresh token.");
   }
 
   const profile = await fetchCurrentSpotifyUserProfile(accessToken);
   const existingSession = await getSpotifySessionState();
   if (existingSession && existingSession.spotifyUserId !== profile.id) {
-    throw new Error("Denne app er allerede forbundet til en anden Spotify-bruger.");
+    throw new Error("This app is already connected to a different Spotify account.");
   }
   const session = buildSpotifySessionState(tokenResponse, refreshToken, profile);
   await setSpotifySessionState(session);
@@ -255,6 +258,7 @@ export async function completeSpotifyAuthorization(input: {
   };
 }
 
+/** Deactivates all OAuth-managed playlists and removes the stored Spotify session, effectively disconnecting the account. */
 export async function disconnectSpotifySession() {
   await replaceOwnedPublicPlaylists([]);
   await clearSpotifyAuthState();
@@ -275,10 +279,12 @@ async function getAccessToken() {
   }
 }
 
+/** Returns a valid Spotify access token, automatically refreshing it if it is within 60 seconds of expiry. Concurrent callers share one in-flight refresh. */
 export async function getSpotifyAccessToken() {
   return getAccessToken();
 }
 
+/** Fetches all public playlists owned by the connected Spotify user, syncs them to the database, and returns the list together with a fresh access token. */
 export async function fetchOwnPublicPlaylists(context?: SpotifyExecutionContext) {
   const session = await getRequiredSpotifySession();
   const accessToken = await getAccessToken();
@@ -297,6 +303,7 @@ export async function fetchOwnPublicPlaylists(context?: SpotifyExecutionContext)
   return { accessToken, playlists };
 }
 
+/** Paginates through all tracks in a playlist and returns those that are unavailable in the configured market, along with the total checked count and a snapshot of every track. */
 export async function fetchUnavailableTracksForPlaylist(
   playlistId: string,
   playlistName: string,
@@ -374,6 +381,7 @@ export async function fetchUnavailableTracksForPlaylist(
   return { unavailable, checked, tracks };
 }
 
+/** Fetches the full track details for a single Spotify track ID and returns the minimal context needed to generate a replacement suggestion. */
 export async function fetchTrackSuggestionContext(
   trackId: string,
   context?: SpotifyExecutionContext,
@@ -396,6 +404,7 @@ export async function fetchTrackSuggestionContext(
   };
 }
 
+/** Searches Spotify for a track using one or more query strategies and returns the best-scoring match, or null if no acceptable result is found. */
 export async function searchTrackOnSpotify(input: {
   trackName: string;
   artistName?: string | null;
@@ -442,6 +451,7 @@ export async function searchTrackOnSpotify(input: {
   return null;
 }
 
+/** Fetches the primary artist name for each supplied track ID (max 50) and returns a map of trackId → artistName. Automatically splits batches on 403 errors. */
 export async function fetchTrackPrimaryArtists(
   trackIds: string[],
   context?: SpotifyExecutionContext,
@@ -457,6 +467,7 @@ export async function fetchTrackPrimaryArtists(
   return artistMap;
 }
 
+/** Fetches audio-features BPM values for the supplied track IDs in batches of 100 and returns a map of trackId → rounded BPM. Automatically splits batches on 403 errors. */
 export async function fetchTrackEstimatedBpms(
   trackIds: string[],
   context?: SpotifyExecutionContext,
@@ -582,8 +593,8 @@ async function collectSingleTrackEstimatedBpm(
     }
   } catch (error) {
     console.warn(
-      `[Spotify] Springer BPM-hentning over for track ${trackId} efter fejl på single-track fallback: ${
-        error instanceof Error ? error.message : "ukendt fejl"
+      `[Spotify] Skipping BPM lookup for track ${trackId} after single-track fallback error: ${
+        error instanceof Error ? error.message : "unknown error"
       }`,
     );
   }
@@ -615,8 +626,8 @@ async function collectSingleTrackPrimaryArtist(
     }
   } catch (error) {
     console.warn(
-      `[Spotify] Springer artist-backfill over for track ${trackId} efter fejl på single-track fallback: ${
-        error instanceof Error ? error.message : "ukendt fejl"
+      `[Spotify] Skipping artist backfill for track ${trackId} after single-track fallback error: ${
+        error instanceof Error ? error.message : "unknown error"
       }`,
     );
   }
@@ -626,7 +637,7 @@ async function getRequiredSpotifySession() {
   const session = await getSpotifySessionState();
 
   if (!session) {
-    throw new Error("Spotify er ikke forbundet endnu. Log ind med Spotify først.");
+    throw new Error("Spotify is not connected. Please log in with Spotify first.");
   }
 
   return session;
@@ -812,7 +823,7 @@ async function withRetry<T>(
       const retryAfterSeconds = getRetryAfterSecondsFromError(error);
       if (status === 429 && retryAfterSeconds > MAX_RETRY_AFTER_SECONDS) {
         const rateLimitError = new Error(
-          `Spotify rate limit er aktiv i ${retryAfterSeconds} sekunder. Stopper jobbet i stedet for at vente så længe.`,
+          `Spotify rate limit is active for ${retryAfterSeconds} seconds. Stopping the job rather than waiting that long.`,
         ) as SpotifyRequestError;
         rateLimitError.status = 429;
         rateLimitError.retryAfterSeconds = retryAfterSeconds;
@@ -876,6 +887,7 @@ function getUrlFromError(error: unknown) {
   return undefined;
 }
 
+/** Extracts a structured cooldown descriptor from a Spotify 429 error. Returns null for any other error type. */
 export function getSpotifyCooldownFromError(error: unknown) {
   if (
     typeof error === "object" &&
@@ -905,6 +917,7 @@ function formatSpotifyErrorMessage(status: number, url: string, retryAfterSecond
   return `Spotify API request failed: ${status} (${url})`;
 }
 
+/** Scores a Spotify search result candidate (0–220) based on track name match (0/60/100), artist match (0/40/80), and duration proximity (0–40). Higher is better. */
 export function getSearchMatchScore(
   candidate: {
     name: string;
@@ -943,6 +956,7 @@ export function getSearchMatchScore(
   return score;
 }
 
+/** Builds an ordered list of Spotify search query strings for a track. Starts with a precise `track:`/`artist:` field query and optionally appends broader plain-text fallbacks and base-title variants. */
 export function buildTrackSearchQueries(input: {
   trackName: string;
   artistName?: string | null;
@@ -979,6 +993,7 @@ export function buildTrackSearchQueries(input: {
   return [...new Set(queries.filter((query) => query.trim().length > 0))];
 }
 
+/** Returns true if a Spotify search result item passes all the supplied filter constraints (excluded ID, exact title, artist match, duration window). */
 export function isAcceptableTrackSearchMatch(
   item: {
     id: string;
@@ -1024,6 +1039,7 @@ export function isAcceptableTrackSearchMatch(
   return true;
 }
 
+/** Returns true when at least one candidate artist matches the requested artist name, accounting for collaborations, featured artists, and token-split variants. Always returns true when no artist is requested. */
 export function isMatchingArtist(
   candidateArtists: Array<{ name?: string }>,
   requestedArtist: string | null,
@@ -1057,6 +1073,7 @@ export function isMatchingArtist(
   });
 }
 
+/** Returns true if the candidate and requested titles refer to the same track. When `allowVersionMatch` is true, "Song (Radio Edit)" matches "Song (Remix)" by comparing stripped base titles. */
 export function isMatchingTrackTitle(candidateTitle: string, requestedTitle: string, allowVersionMatch: boolean) {
   const normalizedCandidate = normalizeSearchText(candidateTitle);
   const normalizedRequested = normalizeSearchText(requestedTitle);
@@ -1071,6 +1088,7 @@ export function isMatchingTrackTitle(candidateTitle: string, requestedTitle: str
   return getBaseTrackTitle(normalizedCandidate) === getBaseTrackTitle(normalizedRequested);
 }
 
+/** Strips common version/edition suffixes (remix, remaster, radio edit, year, deluxe, etc.) from a pre-normalized track title, leaving just the core name. */
 export function getBaseTrackTitle(normalizedTitle: string) {
   return normalizedTitle
     .replace(/\b(19|20)\d{2}\b/g, " ")
@@ -1082,6 +1100,7 @@ export function getBaseTrackTitle(normalizedTitle: string) {
     .replace(/\s+/g, " ");
 }
 
+/** Lowercases, strips diacritics, removes non-alphanumeric characters, and collapses whitespace — producing a canonical form suitable for comparison and search queries. */
 export function normalizeSearchText(value: string) {
   return value
     .normalize("NFKD")
@@ -1092,6 +1111,7 @@ export function normalizeSearchText(value: string) {
     .replace(/\s+/g, " ");
 }
 
+/** Normalizes an artist name by stripping featured-artist suffixes (feat./ft.) before applying `normalizeSearchText`. Returns an empty string for null/undefined. */
 export function normalizeArtistText(value: string | null | undefined) {
   if (!value) {
     return "";
@@ -1104,6 +1124,7 @@ export function normalizeArtistText(value: string | null | undefined) {
     .replace(/\s+/g, " ");
 }
 
+/** Splits a normalized artist string on common collaboration separators (&, and, comma, x) and returns the individual artist name tokens. */
 export function getArtistSearchTokens(normalizedArtist: string) {
   return normalizedArtist
     .split(/\band\b|&|,|\bx\b/gi)
