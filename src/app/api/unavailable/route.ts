@@ -67,7 +67,9 @@ export async function GET(request: Request) {
       suggestionIndex: replacement.suggestion_index,
       suggestedTrackName: replacement.suggested_track_name,
       suggestedArtistName: replacement.suggested_artist_name,
-      suggestedSpotifyUrl: replacement.suggested_spotify_url,
+      suggestedSpotifyUrl: replacement.suggested_spotify_track_id
+        ? `spotify:track:${replacement.suggested_spotify_track_id}`
+        : replacement.suggested_spotify_url,
       suggestedSpotifyTrackId: replacement.suggested_spotify_track_id,
       durationMs: replacement.duration_ms,
       estimatedBpm: replacement.estimated_bpm,
@@ -117,9 +119,9 @@ export async function GET(request: Request) {
 }
 
 function buildSpotifyPlaylistUrl(playlistId: string) {
-  return `https://open.spotify.com/playlist/${playlistId}`;
+  return `spotify:playlist:${playlistId}`;
 }
 
 function buildSpotifyTrackUrl(trackId: string) {
-  return `https://open.spotify.com/track/${trackId}`;
+  return `spotify:track:${trackId}`;
 }
