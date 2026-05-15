@@ -1,221 +1,232 @@
 # SpotifyCheck User Guide
 
-## What The App Does
+## What the app does
 
-SpotifyCheck monitors one Spotify user's own public playlists and looks for tracks
- that are unavailable in the configured market. When it finds newly unavailable
- tracks, it sends an email notification.
+SpotifyCheck monitors one Spotify user's own public playlists and looks for
+tracks that are unavailable in the configured market. When it finds newly
+unavailable tracks, it sends an email notification.
 
 The app is intentionally narrow:
 
 - one Spotify account
-- that user's own public playlists
+- that user's own public playlists only
 - one configured market, for example `DK`
-- email alerts only for newly unavailable tracks
+- email alerts only for newly unavailable tracks (not repeated on every run)
 
-## Daily Workflow
+---
 
-Most days the app should run without any manual work.
+## Daily workflow
 
-1. Vercel cron calls `/api/cron/daily`
-2. The app queues a check job
-3. SpotifyCheck loads the connected user's public playlists
-4. Unchanged playlists are skipped by snapshot checkpoint
-5. Changed playlists are scanned for unavailable tracks
-6. New findings are written to the database
-7. A notification email is sent if new unavailable tracks were found
+Most days the app runs without any manual work.
 
-## First-Time Setup
+1. Vercel Cron triggers a daily check at 07:00 UTC
+2. The app loads the connected user's public playlists from Spotify
+3. Playlists whose content has not changed are skipped
+4. Changed or stale playlists are scanned for unavailable tracks
+5. New findings are written to the database
+6. A notification email is sent if new unavailable tracks were found
 
-### 1. Configure Spotify
+---
 
-In Spotify Developer Dashboard:
+## Control panel overview
 
-- create or open the Spotify app
-- set redirect URI to `http://127.0.0.1:3000/api/spotify/callback` for local development
-- use an HTTPS redirect URI in production
+The control panel has four tabs.
 
-### 2. Configure Environment Variables
+### Overview tab
 
-Required env vars:
+Shows the current run status and key counters: how many playlists were checked,
+how many tracks were found unavailable, and when the last successful run
+completed.
 
-- `DATABASE_URL`
-- `SPOTIFY_CLIENT_ID`
-- `SPOTIFY_CLIENT_SECRET`
-- `SPOTIFY_MARKET`
-- `RESEND_API_KEY`
-- `ALERT_EMAIL_TO`
-- `ALERT_EMAIL_FROM`
-- `CRON_SECRET`
+### Findings tab
 
-Optional locally:
+Lists all playlists that currently have unavailable tracks. Each playlist is
+expandable and shows:
 
-- `SPOTIFY_REDIRECT_URI`
+- the track name and duration, as a link that opens the track directly in the
+  Spotify app
+- when the track was last seen as unavailable
+- the primary artist name
+- any AI-generated replacement suggestions
 
-### 3. Start The App
+Only tracks that are currently unavailable are shown. Once a track has been
+fixed in Spotify and a new scan has run, it disappears from this list.
 
-```bash
-npm install
-npm run dev -- --hostname 127.0.0.1
-```
+### Actions tab
 
-Then open `http://127.0.0.1:3000`.
+Contains the manual controls described below.
 
-### 4. Connect Spotify
+### Settings tab
 
-Use the `Forbind Spotify` button in the control panel.
+Shows the connected Spotify account and provides advanced recovery actions.
 
-After login succeeds:
+---
 
-- the app stores Spotify access and refresh tokens server-side
-- the browser receives an `httpOnly` admin session cookie
-- the control panel can be used without manually entering a secret
-- the app does not immediately sync playlists during login
-
-## Control Panel
-
-### Forbind Spotify
-
-Starts the Spotify OAuth flow for the single supported user.
-
-### Afbryd Spotify
-
-Removes the stored Spotify session and clears the admin browser session.
+## Actions
 
 ### Spotify smoke test
 
-Performs a low-risk metadata check. It confirms that:
+Performs a low-cost metadata check. It confirms that:
 
-- Spotify login still works
+- the Spotify login still works
 - the app can load the user's public playlists
 - playlist metadata can be read
 
-It does not scan tracks and does not send email.
+It does not scan individual tracks and does not send email. Use this when you
+want a quick sanity check without triggering a full scan.
 
-### Start check
+### Start scan
 
-Queues the full monitor process and then lets the panel follow its progress.
+Queues the full monitor process and shows live progress in the panel.
 
 Expected behavior:
 
-- the request returns quickly
-- the job soon changes from queued to running
-- unchanged playlists are skipped
-- changed playlists are scanned
-- live progress updates appear in the panel
+- the request returns immediately
+- the job moves from queued to running within a few seconds
+- unchanged playlists are skipped automatically
+- changed or stale playlists are scanned track by track
+- live progress updates appear while the scan runs
 
-### Nulstil checkpoints
+### Test scan (5 playlists)
 
-Deletes playlist snapshot checkpoints.
-
-Use this when you want the next run to perform a full track scan even if playlists
-have not changed.
+Runs a limited scan on the next 5 playlists in the queue. Useful for verifying
+behavior after a configuration change without running the full catalog.
 
 ### Stop job
 
-Requests a safe stop. The current run stops at the next checkpoint.
+Requests a safe cancellation. The current run stops at its next internal
+checkpoint and writes a partial result.
 
-### Nød-frigiv lås
+### Reset checkpoints
 
-Only use this if a run is stuck and the lock did not clear normally.
+Deletes the saved per-playlist scan state.
 
-## Database Behavior
+Use this only when you want the next run to perform a full re-scan of every
+playlist even if nothing has changed. This is more expensive and will take
+longer. Under normal operation, checkpoints should be left alone.
 
-The database stores operational state, not a full Spotify mirror.
+### Force-release lock (advanced)
 
-Main stored data:
+Only use this if a run is stuck and its lock has not cleared on its own. Under
+normal operation this should never be needed.
 
-- current Spotify OAuth session
-- admin runtime state, such as cooldowns
-- monitored playlist catalog
-- playlist checkpoints
-- unavailable-track records
-- job and run history
+---
 
-For unavailable tracks the app stores only the minimal data needed for alerts and
-deduplication:
+## Finding and fixing unavailable tracks
 
-- playlist id
-- playlist name
-- track id
-- track name
-- track duration
-- availability state and timestamps
+### How to respond to an alert email
 
-## Rate Limit Behavior
+1. Open the **Findings** tab in the control panel
+2. Each unavailable track shows as a link — click it to open the track in the
+   Spotify app
+3. Find a replacement track and update the playlist in Spotify
 
-SpotifyCheck is designed to be defensive with rate limits.
+### Generating AI replacement suggestions
+
+For each unavailable track, click **Find 2 alternatives**. The app queries
+OpenAI and searches Spotify to find two tracks that are:
+
+- similar in title or artist
+- close in duration
+- available in the configured market
+
+Results appear directly below the track. Click a suggestion to open it in
+Spotify. You can re-run suggestions with **Update alternatives** to get a fresh
+set.
+
+This feature requires `OPENAI_API_KEY` to be configured.
+
+### After fixing a track in Spotify
+
+When you replace an unavailable track with an available one in Spotify, the
+playlist's version identifier changes automatically. The next scan detects this
+change, gives that playlist highest priority, and removes the finding from the
+app once the scan completes.
+
+You do not need to do anything else in the app — just start a scan after making
+the change in Spotify.
+
+---
+
+## Rate limit behavior
+
+SpotifyCheck is designed to be defensive with Spotify's API rate limits.
 
 It does all of the following:
 
-- throttles outgoing Spotify requests
-- retries with exponential backoff
-- respects the `Retry-After` header
-- stops early on very long rate limits
-- stores a cooldown in the database
-- resumes from the interrupted playlist on the next run
-- uses a daily scan budget for expensive item-level scans
-- rechecks unchanged playlists only when their availability data has gone stale
+- throttles outgoing Spotify requests to a safe interval
+- retries with exponential backoff on temporary failures
+- respects the `Retry-After` header from Spotify
+- stops early when Spotify requests a very long wait
+- stores a cooldown in the database so later runs know to wait
+- resumes from the interrupted playlist on the next run rather than starting over
+- uses a daily budget cap for expensive track-level scans (100 playlists per run)
 
-This means a large first scan may stop, but the next run should continue from where
-it left off instead of starting over.
+A large first scan may stop partway through, but the next run continues from
+where the previous one left off.
 
-The app now also tries to avoid long open HTTP requests by queueing the job
-first and then running it in the background in the current process.
+---
 
 ## Notifications
 
-An email is only sent when a track becomes newly unavailable in a playlist.
+An email is sent only when a track becomes **newly** unavailable.
 
-The email currently contains:
+- if a track was already flagged in a previous run, no new email is sent
+- if a track is fixed and later becomes unavailable again, a new email is sent
+  at that point
 
-- playlist name
-- track name
-- track duration
+The email contains the playlist name, track name, and duration.
 
-If a track remains unavailable across multiple runs, it should not generate a new
-email every time.
+---
 
 ## Troubleshooting
 
-### Spotify is connected but checks do nothing
+### Scan runs but finds nothing
 
-This often means all playlists were unchanged and their availability scans were
-still considered fresh, so they were skipped safely.
+This usually means all playlists were unchanged and their availability scans
+were still considered fresh, so they were skipped. This is expected behavior.
 
-Use `Nulstil checkpoints` and then run `Start check` again if you want a full scan.
+Use **Reset checkpoints** and then **Start scan** if you want to force a full
+re-scan.
 
-### The panel says Spotify cooldown is active
+### The panel shows a Spotify cooldown
 
 Spotify returned a strong rate-limit response. Wait until the cooldown expires
-before running another scan.
+before starting another scan — the panel shows when it clears.
 
-### I do not receive email
+### No alert emails are arriving
 
 Check:
 
-- `RESEND_API_KEY`
-- `ALERT_EMAIL_TO`
-- `ALERT_EMAIL_FROM`
-- whether the run actually found newly unavailable tracks
+- `RESEND_API_KEY` is valid and the domain is verified in Resend
+- `ALERT_EMAIL_TO` and `ALERT_EMAIL_FROM` are correct
+- check whether the run log shows that new unavailable tracks were actually found
 
-### The app asks to reconnect Spotify
+### The panel asks to reconnect Spotify
 
 This usually means:
 
-- the Spotify server-side session was cleared
-- the admin browser cookie expired
-- or the connected Spotify user changed
+- the Spotify server-side session was cleared manually
+- the admin browser cookie has expired (it lasts 7 days)
+- the connected Spotify user changed
 
-Reconnect with `Forbind Spotify`.
+Reconnect using **Forbind Spotify** in the Settings tab.
 
-## Suggested Operator Routine
+### A job is stuck in "running" state
 
-For normal use:
+Use **Force-release lock** in the Settings tab to clear the stale lock and
+allow a new scan to start.
 
-1. Keep cron enabled
-2. Use smoke test only when you need a safe health check
-3. Use full scans when needed
-4. Avoid resetting checkpoints unless you intentionally want a more expensive run
-5. Expect normal runs to spread expensive scans over multiple days instead of trying
-   to scan every playlist every time
+---
+
+## Suggested operator routine
+
+For normal steady-state operation:
+
+1. Leave the daily cron enabled and let it run automatically
+2. Check the Findings tab when you receive an alert email
+3. Fix unavailable tracks in Spotify, then start a manual scan to confirm
+4. Use **Spotify smoke test** when you want a cheap health check after a
+   configuration change
+5. Avoid resetting checkpoints unless you specifically want a full re-scan —
+   checkpoints are what keep the app efficient

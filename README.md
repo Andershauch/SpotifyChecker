@@ -1,89 +1,87 @@
 # SpotifyCheck
 
-Simpel webapp der en gang i døgnet tjekker dine egne **offentlige** Spotify-playlister og sender e-mail, hvis et track ikke er tilgængeligt i din region.
+A focused web app that monitors one Spotify user's own public playlists and sends an email when a track becomes unavailable in the configured market.
 
-Se også:
+See also:
 
-- den praktiske brugermanual i [docs/USER_GUIDE.md](/home/devops/projects/SpotifyCheck/docs/USER_GUIDE.md)
-- den udviklerrettede arkitekturdoc i [docs/ARCHITECTURE.md](/home/devops/projects/SpotifyCheck/docs/ARCHITECTURE.md)
-- workflow-migrationsplanen i [docs/WORKFLOW_MIGRATION_PLAN.md](/home/devops/projects/SpotifyCheck/docs/WORKFLOW_MIGRATION_PLAN.md)
+- Practical usage guide: [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
+- Technical architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ## Stack
 
 - Next.js (App Router) on Vercel
 - Neon Postgres
 - Spotify Web API
-- Resend e-mail
-- Vercel Cron
+- OpenAI API (optional — for AI-powered replacement suggestions)
+- Resend for email alerts
+- Vercel Cron + Vercel Workflow for scheduled and durable execution
 
-## 1) Opret integrationer
+## Setup
 
-1. Spotify Developer App
-   - Opret app på https://developer.spotify.com/dashboard
-   - Kopier `SPOTIFY_CLIENT_ID` og `SPOTIFY_CLIENT_SECRET`
-   - Tilføj redirect URI: `http://127.0.0.1:3000/api/spotify/callback`
-2. Neon database
-   - Opret projekt og kopiér connection string til `DATABASE_URL`
-3. Resend
-   - Opret API key (`RESEND_API_KEY`)
-   - Verificér dit afsenderdomæne og sæt `ALERT_EMAIL_FROM`
+### 1. Create integrations
 
-## 2) Miljøvariabler
+#### Spotify Developer App
 
-Kopiér `.env.example` til `.env.local` og udfyld:
+1. Create or open an app at <https://developer.spotify.com/dashboard>
+2. Copy `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET`
+3. Add redirect URI: `http://127.0.0.1:3000/api/spotify/callback` for local development
+4. Use an HTTPS redirect URI in production
 
-- `DATABASE_URL`
-- `SPOTIFY_CLIENT_ID`
-- `SPOTIFY_CLIENT_SECRET`
-- `SPOTIFY_REDIRECT_URI` (valgfri lokalt, default er `http://127.0.0.1:3000/api/spotify/callback`)
-- `SPOTIFY_MARKET` (ISO-landekode, fx `DK`)
-- `RESEND_API_KEY`
-- `ALERT_EMAIL_TO`
-- `ALERT_EMAIL_FROM`
-- `CRON_SECRET` (minimum 24 tegn)
+#### Neon database
 
-## 3) Lokal kørsel
+1. Create a project and copy the connection string to `DATABASE_URL`
+
+#### Resend
+
+1. Create an API key (`RESEND_API_KEY`)
+2. Verify your sender domain and set `ALERT_EMAIL_FROM`
+
+### 2. Configure environment variables
+
+Copy `.env.example` to `.env.local` and fill in:
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `DATABASE_URL` | Yes | Neon Postgres connection string |
+| `SPOTIFY_CLIENT_ID` | Yes | From Spotify Developer Dashboard |
+| `SPOTIFY_CLIENT_SECRET` | Yes | From Spotify Developer Dashboard |
+| `SPOTIFY_MARKET` | Yes | ISO country code, e.g. `DK` |
+| `RESEND_API_KEY` | Yes | Resend API key |
+| `ALERT_EMAIL_TO` | Yes | Email address to receive alerts |
+| `ALERT_EMAIL_FROM` | Yes | Verified sender address |
+| `CRON_SECRET` | Yes | Random secret, minimum 24 characters |
+| `SPOTIFY_REDIRECT_URI` | No | Defaults to `http://127.0.0.1:3000/api/spotify/callback` |
+| `OPENAI_API_KEY` | No | Enables AI-powered replacement suggestions |
+| `OPENAI_SUGGESTION_MODEL` | No | Defaults to `gpt-4o-mini` |
+
+### 3. Run locally
 
 ```bash
 npm install
 npm run dev
 ```
 
-Åbn `http://127.0.0.1:3000`.
+Open `http://127.0.0.1:3000`.
 
-Forbind derefter Spotify-kontoen fra kontrolpanelet. Appen bruger Spotify OAuth til én bruger, gemmer tokens server-side og læser kun brugerens egne public playlister via `GET /me/playlists`.
+### 4. Connect Spotify
 
-For utilgængelige tracks gemmer appen kun den minimale driftsdata, der er nødvendig for notifikationer og deduplikering:
+Click **Forbind Spotify** in the control panel. The app stores Spotify tokens server-side and sets a signed admin session cookie in the browser. No Spotify secrets are exposed to the browser.
 
-- playlist-id og playlist-navn
-- track-id
-- track-navn
-- track-længde
-- utilgængelig-status og timestamps
+### 5. Deploy to Vercel
 
-## 4) Manuelt check
-
-Brug kontrolpanelet i UI’et efter Spotify-login:
-
-- `Spotify smoke test` for et billigt metadata-check
-- `Start check` for at sætte det rigtige scan i kø
-- `Nulstil checkpoints` hvis næste check skal tvinges til et fuldt track-scan
-
-## 5) Daglig cron på Vercel
-
-`vercel.json` er sat til at køre én gang dagligt kl. 07:00 UTC via `/api/cron/daily`.
-
-På Vercel:
-
-1. Sæt alle miljøvariabler
+1. Set all environment variables in the Vercel project settings
 2. Deploy
-3. Bekræft cron-kørsel i Vercel dashboard
+3. Confirm cron execution in the Vercel dashboard (`vercel.json` runs daily at 07:00 UTC)
 
-## Sikkerhed
+## Running tests
 
-- `/api/cron/daily` er beskyttet af `Authorization: Bearer <CRON_SECRET>`.
-- Kontrolpanelets API-kald bruger en server-sat `httpOnly` admin-cookie efter Spotify-login.
-- Ingen secrets returneres i UI.
-- Database oprettes automatisk med minimale tabeller ved første kørsel.
-- Spotify access token og refresh token gemmes server-side i databasen for den ene tilsluttede bruger.
-- Trackdata minimeres til navn, længde, playlist-tilknytning og utilgængelighedsstatus.
+```bash
+npm test
+```
+
+## Security model
+
+- `/api/cron/daily` is protected by `Authorization: Bearer <CRON_SECRET>`
+- The control panel API uses a signed `httpOnly` admin cookie set at Spotify login
+- Spotify access and refresh tokens are stored server-side only
+- The database is created automatically with the required tables on first run
