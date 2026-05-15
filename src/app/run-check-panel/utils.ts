@@ -124,20 +124,9 @@ export function getSmokeSummaryMessage(result: SmokeCheckResponse): string {
 }
 
 export function formatPlaylistTrackSummary(playlist: UnavailablePlaylistGroup): string {
-  const currentCount = playlist.tracks.filter((track) => track.currentlyUnavailable).length;
-  const historicalCount = playlist.trackCount - currentCount;
-  const segments: string[] = [];
-
-  if (currentCount > 0) {
-    segments.push(`${currentCount} aktuelt utilgængelige track${currentCount === 1 ? "" : "s"}`);
-  }
-
-  if (historicalCount > 0) {
-    segments.push(`${historicalCount} historiske`);
-  }
-
-  if (segments.length === 0) return "Ingen registrerede fund";
-  return segments.join(" • ");
+  const count = playlist.trackCount;
+  if (count === 0) return "Ingen utilgængelige tracks";
+  return `${count} utilgængeligt track${count === 1 ? "" : "s"}`;
 }
 
 export function formatDateTime(value: string): string {

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { isAdminRequestAuthorized } from "@/lib/auth";
 import {
-  getKnownUnavailableTracks,
+  getCurrentUnavailableTracks,
   getTrackReplacementsForCurrentUnavailableTracks,
 } from "@/lib/db";
 
@@ -10,7 +10,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const tracks = await getKnownUnavailableTracks();
+  const tracks = await getCurrentUnavailableTracks();
   const replacements = await getTrackReplacementsForCurrentUnavailableTracks();
   const replacementMap = new Map<string, Array<{
     referenceArtistName: string | null;
@@ -39,7 +39,6 @@ export async function GET(request: Request) {
         durationMs: number | null;
         firstSeenAt: string;
         lastSeenAt: string;
-        currentlyUnavailable: boolean;
         primaryArtistName: string | null;
         referenceArtistName: string | null;
         referenceEstimatedBpm: number | null;
@@ -95,7 +94,6 @@ export async function GET(request: Request) {
       durationMs: track.duration_ms,
       firstSeenAt: track.first_seen_at,
       lastSeenAt: track.last_seen_at,
-      currentlyUnavailable: track.currently_unavailable,
       primaryArtistName: track.primary_artist_name,
       referenceArtistName:
         replacementMap.get(`${track.playlist_id}::${track.track_id}`)?.[0]?.referenceArtistName ??
@@ -113,8 +111,6 @@ export async function GET(request: Request) {
     playlists: [...grouped.values()].sort((left, right) => right.trackCount - left.trackCount),
     totalPlaylists: grouped.size,
     totalTracks: tracks.length,
-    currentTracks: tracks.filter((track) => track.currently_unavailable).length,
-    historicalTracks: tracks.filter((track) => !track.currently_unavailable).length,
   });
 }
 

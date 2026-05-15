@@ -183,7 +183,6 @@ export function RunCheckPanel() {
           unavailablePlaylists={unavailablePlaylists}
           unavailableTrackRows={unavailableTrackRows}
           tracksWithSuggestions={tracksWithSuggestions}
-          currentUnavailableTracks={currentUnavailableTracks}
           unavailableMessage={unavailableMessage}
           generatingSuggestionsFor={generatingSuggestionsFor}
           onGenerateSuggestions={(playlistId, trackId) => {

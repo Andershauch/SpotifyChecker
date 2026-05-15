@@ -11,7 +11,6 @@ type FindingsTabProps = {
   unavailablePlaylists: UnavailablePlaylistGroup[];
   unavailableTrackRows: TrackRow[];
   tracksWithSuggestions: number;
-  currentUnavailableTracks: number;
   unavailableMessage: string | null;
   generatingSuggestionsFor: string | null;
   onGenerateSuggestions: (playlistId: string, trackId: string) => void;
@@ -22,7 +21,6 @@ export function FindingsTab({
   unavailablePlaylists,
   unavailableTrackRows,
   tracksWithSuggestions,
-  currentUnavailableTracks,
   unavailableMessage,
   generatingSuggestionsFor,
   onGenerateSuggestions,
@@ -36,10 +34,10 @@ export function FindingsTab({
         </div>
         {unavailableData ? (
           <p className="section-note">
-            {unavailableData.currentTracks} aktuelle og {unavailableData.historicalTracks} historiske
-            fund fordelt på {unavailableData.totalPlaylists} playliste
+            {unavailableData.totalTracks} utilgængelige tracks fordelt på{" "}
+            {unavailableData.totalPlaylists} playliste
             {unavailableData.totalPlaylists === 1 ? "" : "r"}. {tracksWithSuggestions} af{" "}
-            {unavailableTrackRows.length} tracks har forslag.
+            {unavailableTrackRows.length} har forslag.
           </p>
         ) : null}
       </div>
@@ -50,13 +48,7 @@ export function FindingsTab({
         <p className="helper-text">Ingen aktuelle utilgængelige tracks er registreret lige nu.</p>
       ) : null}
 
-      {!unavailableMessage && unavailablePlaylists.length > 0 && currentUnavailableTracks === 0 ? (
-        <p className="helper-text">
-          Der er ingen aktuelle fund lige nu. Listen nedenfor viser kun historik fra tidligere scans.
-        </p>
-      ) : null}
-
-      <div className="playlist-findings">
+<div className="playlist-findings">
         {unavailablePlaylists.map((playlist, index) => (
           <details key={playlist.playlistId} className="playlist-finding" open={index === 0}>
             <summary>
@@ -103,15 +95,6 @@ export function FindingsTab({
                     {track.durationMs ? <span>{formatDuration(track.durationMs)}</span> : null}
                   </div>
                   <small>
-                    <span
-                      className={
-                        track.currentlyUnavailable
-                          ? "track-status track-status-current"
-                          : "track-status track-status-historical"
-                      }
-                    >
-                      {track.currentlyUnavailable ? "Aktuel" : "Historisk"}
-                    </span>{" "}
                     Senest set {formatDateTime(track.lastSeenAt)} {" • "}
                     {track.primaryArtistName ?? "ukendt kunstner"}
                   </small>

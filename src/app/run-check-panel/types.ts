@@ -79,7 +79,6 @@ export type UnavailablePlaylistGroup = {
     durationMs: number | null;
     firstSeenAt: string;
     lastSeenAt: string;
-    currentlyUnavailable: boolean;
     primaryArtistName: string | null;
     referenceArtistName: string | null;
     referenceEstimatedBpm: number | null;
@@ -101,8 +100,6 @@ export type UnavailableResponse = {
   playlists: UnavailablePlaylistGroup[];
   totalPlaylists: number;
   totalTracks: number;
-  currentTracks: number;
-  historicalTracks: number;
 };
 
 export type DashboardTab = "overview" | "findings" | "actions" | "settings";

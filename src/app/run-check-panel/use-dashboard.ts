@@ -224,9 +224,7 @@ export function useDashboard() {
   const tracksWithSuggestions = unavailableTrackRows.filter(
     ({ track }) => track.suggestions.length > 0,
   ).length;
-  const currentUnavailableTracks =
-    unavailableData?.currentTracks ??
-    unavailableTrackRows.filter(({ track }) => track.currentlyUnavailable).length;
+  const currentUnavailableTracks = unavailableData?.totalTracks ?? unavailableTrackRows.length;
   const canStartScan =
     Boolean(spotifyConnection?.connected) && !isRunning && !isStarting && !activeCooldown;
 
