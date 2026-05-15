@@ -905,7 +905,7 @@ function formatSpotifyErrorMessage(status: number, url: string, retryAfterSecond
   return `Spotify API request failed: ${status} (${url})`;
 }
 
-function getSearchMatchScore(
+export function getSearchMatchScore(
   candidate: {
     name: string;
     duration_ms?: number;
@@ -943,7 +943,7 @@ function getSearchMatchScore(
   return score;
 }
 
-function buildTrackSearchQueries(input: {
+export function buildTrackSearchQueries(input: {
   trackName: string;
   artistName?: string | null;
   useBroadFallback?: boolean;
@@ -979,7 +979,7 @@ function buildTrackSearchQueries(input: {
   return [...new Set(queries.filter((query) => query.trim().length > 0))];
 }
 
-function isAcceptableTrackSearchMatch(
+export function isAcceptableTrackSearchMatch(
   item: {
     id: string;
     name: string;
@@ -1024,7 +1024,7 @@ function isAcceptableTrackSearchMatch(
   return true;
 }
 
-function isMatchingArtist(
+export function isMatchingArtist(
   candidateArtists: Array<{ name?: string }>,
   requestedArtist: string | null,
 ) {
@@ -1057,7 +1057,7 @@ function isMatchingArtist(
   });
 }
 
-function isMatchingTrackTitle(candidateTitle: string, requestedTitle: string, allowVersionMatch: boolean) {
+export function isMatchingTrackTitle(candidateTitle: string, requestedTitle: string, allowVersionMatch: boolean) {
   const normalizedCandidate = normalizeSearchText(candidateTitle);
   const normalizedRequested = normalizeSearchText(requestedTitle);
   if (normalizedCandidate === normalizedRequested) {
@@ -1071,7 +1071,7 @@ function isMatchingTrackTitle(candidateTitle: string, requestedTitle: string, al
   return getBaseTrackTitle(normalizedCandidate) === getBaseTrackTitle(normalizedRequested);
 }
 
-function getBaseTrackTitle(normalizedTitle: string) {
+export function getBaseTrackTitle(normalizedTitle: string) {
   return normalizedTitle
     .replace(/\b(19|20)\d{2}\b/g, " ")
     .replace(
@@ -1082,7 +1082,7 @@ function getBaseTrackTitle(normalizedTitle: string) {
     .replace(/\s+/g, " ");
 }
 
-function normalizeSearchText(value: string) {
+export function normalizeSearchText(value: string) {
   return value
     .normalize("NFKD")
     .replace(/\p{Diacritic}/gu, "")
@@ -1092,7 +1092,7 @@ function normalizeSearchText(value: string) {
     .replace(/\s+/g, " ");
 }
 
-function normalizeArtistText(value: string | null | undefined) {
+export function normalizeArtistText(value: string | null | undefined) {
   if (!value) {
     return "";
   }
@@ -1104,7 +1104,7 @@ function normalizeArtistText(value: string | null | undefined) {
     .replace(/\s+/g, " ");
 }
 
-function getArtistSearchTokens(normalizedArtist: string) {
+export function getArtistSearchTokens(normalizedArtist: string) {
   return normalizedArtist
     .split(/\band\b|&|,|\bx\b/gi)
     .map((part) => part.trim())

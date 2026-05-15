@@ -294,7 +294,7 @@ async function generateTrackReplacementSuggestions(input: {
   );
 }
 
-function enforceOpenAiDurationTolerance(
+export function enforceOpenAiDurationTolerance(
   result: z.infer<typeof replacementResponseSchema>,
   referenceDurationMs: number | null,
 ) {
@@ -351,7 +351,7 @@ function isTimeoutError(error: unknown) {
   );
 }
 
-function extractSpotifyTrackId(url: string | null) {
+export function extractSpotifyTrackId(url: string | null) {
   if (!url) {
     return null;
   }

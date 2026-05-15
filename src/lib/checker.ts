@@ -725,7 +725,7 @@ async function getResumePlaylistId() {
   return typeof payload?.resumePlaylistId === "string" ? payload.resumePlaylistId : null;
 }
 
-function applyResumePoint(playlists: PlaylistSummary[], resumePlaylistId: string | null) {
+export function applyResumePoint(playlists: PlaylistSummary[], resumePlaylistId: string | null) {
   if (!resumePlaylistId) {
     return playlists;
   }
@@ -761,7 +761,7 @@ function prioritizePlaylistsForScan(
   });
 }
 
-function getPlaylistScanDecision(
+export function getPlaylistScanDecision(
   playlist: PlaylistSummary,
   checkpoint: PlaylistCheckpointRow | undefined,
 ) {
